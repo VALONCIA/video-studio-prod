@@ -157,9 +157,10 @@ def _execute(
     ctx.stages = stages
     monitor = CheckpointMonitor(project_dir, stages)
     llm_cost = 0.0
-    warnings: list[str] = []
-    insights: dict = {}
+    warnings: list[str] = list(meta0.get("warnings", []))
+    insights: dict = dict(meta0.get("insights", {}))
     kept_ranges: list[dict] = list(meta0.get("kept_ranges", []))
+    source_durations = list(meta0.get("source_durations_seconds", []))
 
     def poll() -> Abort | None:
         try:
@@ -190,6 +191,7 @@ def _execute(
             warnings = list(result.warnings)
             insights = dict(result.insights)
             kept_ranges = list(result.kept_ranges)
+            source_durations = list(result.source_durations_seconds)
             log.info("runtime_finished", status=result.status, turns=result.turns,
                      elapsed_ms=int((time.monotonic() - started) * 1000), detail=sanitize_text(result.detail, 400))
 
@@ -204,6 +206,10 @@ def _execute(
             produced = compose_completed(project_dir, stages[-1]) and find_final_output(project_dir, stages[-1])
             if result.status != "completed" and not produced:
                 return _fail(session, gid, result.error_code or ErrorCode.GENERATION_FAILED, result.detail)
+            # Keep verified render facts when final upload needs a retry and skips rendering.
+            gen.meta = {**(gen.meta or {}), "warnings": warnings, "insights": insights,
+                        "kept_ranges": kept_ranges, "source_durations_seconds": source_durations}
+            session.commit()
 
         # ---- finalize: validate -> thumbnail -> upload -> persist ----
         svc.update_progress(session, gid, 92, "finalizing")
@@ -246,6 +252,7 @@ def _execute(
                 },
                 "provider_cost_usd": provider_spend, "llm_cost_usd": round(llm_cost, 4),
                 "warnings": warnings, "insights": insights, "kept_ranges": kept_ranges,
+                "source_durations_seconds": source_durations,
             },
         )
         est = _estimated_cost(project_dir)

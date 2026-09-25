@@ -500,8 +500,12 @@ def run(spec: dict) -> dict:
 
     # ---- captions (opt-in; burns real transcribed speech, never faked)
     stage("captions", "in_progress")
-    if plan["captions"] and not add_captions(final, work):
-        warnings.append("captions_unavailable")
+    insights: dict = {}
+    if plan["captions"]:
+        if add_captions(final, work):
+            insights["captions_added"] = True
+        else:
+            warnings.append("captions_unavailable")
     stage("captions", "completed")
 
     # ---- render
@@ -511,7 +515,9 @@ def run(spec: dict) -> dict:
         raise EditError("rendered output has zero duration")
     stage("render", "completed")
     shutil.rmtree(work, ignore_errors=True)
-    return {"ok": True, "warnings": sorted(set(warnings)), "output_seconds": round(out["duration"], 2), "segments": len(segs)}
+    return {"ok": True, "warnings": sorted(set(warnings)), "output_seconds": round(out["duration"], 2),
+            "segments": len(segs), "insights": insights,
+            "source_durations_seconds": [meta["duration"] for _, meta in sources]}
 
 
 def main() -> int:

@@ -64,6 +64,7 @@ class RuntimeResult:
     warnings: list[str] = field(default_factory=list)  # safe, machine-readable codes only
     insights: dict = field(default_factory=dict)  # safe summary numbers for the client (e.g. retakes removed)
     kept_ranges: list[dict] = field(default_factory=list)  # source-relative ranges used in the rendered cut
+    source_durations_seconds: list[float | None] = field(default_factory=list)  # verified, input order
 
 
 class RuntimeOrchestrator(ABC):

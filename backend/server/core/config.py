@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     max_broll_clips_per_edit: int = 2
     max_variants_per_request: int = 5
     max_variants_per_edit: int = 10
-    max_assets_per_edit: int = 10
+    max_assets_per_edit: int = Field(default=10, ge=1, le=10)
     transcribe_model: str = "base"  # faster-whisper size; pre-downloaded in the Docker image
     transcribe_language: str | None = None  # None = auto-detect
     takes_llm_enabled: bool = True  # let the editing model choose among the engine's candidate takes

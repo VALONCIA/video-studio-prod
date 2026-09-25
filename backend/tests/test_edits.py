@@ -241,6 +241,9 @@ def test_first_product_test_upload_edit_poll_output_playback(client, upload_asse
     st = client.get(f"/v1/edits/{eid}").json()
     assert st["status"] == "completed" and st["progress"] == 100 and st["display_stage"] == "Ready"
     assert st["output_url"] and st["thumbnail_url"] and st["error"] is None
+    assert st["sources"][0]["asset_id"] == a["id"]
+    assert st["sources"][0]["duration_seconds"] == pytest.approx(_probe(FIXTURE_VIDEO)[0])
+    assert st["sources"][0]["playback_url"]
     assert st["warnings"] == ["captions_unavailable"]  # honest: no speech-to-text in this environment
     # the "playback" URL is really servable and is a valid 9:16 H.264 file shorter than the source
     media = client.get(st["output_url"], headers={"Authorization": ""})

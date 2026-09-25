@@ -82,6 +82,7 @@ class EditCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: uuid.UUID | None = None
+    project_name: str | None = Field(default=None, min_length=1, max_length=120)
     asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=10)
     instruction: str = Field(min_length=8, max_length=2000)
     platform: Platform = "tiktok"
@@ -89,6 +90,17 @@ class EditCreate(BaseModel):
     duration_target_seconds: int | None = Field(default=None, ge=5, le=90)
     cta_text: str | None = Field(default=None, max_length=60)
     brand_kit_id: uuid.UUID | None = None
+
+    @field_validator("project_name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        return ProjectCreate(name=v).name if v is not None else None
+
+    @model_validator(mode="after")
+    def _project(self):
+        if self.project_id is not None and self.project_name is not None:
+            raise ValueError("project_name is only valid without project_id")
+        return self
 
     @field_validator("instruction")
     @classmethod
@@ -126,6 +138,13 @@ class EditAccepted(BaseModel):
     poll_url: str
 
 
+class EditSourceOut(BaseModel):
+    asset_id: uuid.UUID
+    filename: str
+    duration_seconds: float | None = None
+    playback_url: str | None = None
+
+
 class EditOut(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID | None
@@ -147,6 +166,7 @@ class EditOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     insights: dict[str, float | int | bool] = Field(default_factory=dict)  # e.g. retakes_removed
     kept_ranges: list[CutRange] = Field(default_factory=list)
+    sources: list[EditSourceOut] = Field(default_factory=list)
     error: GenerationError | None = None
     versions: list[VersionOut] = Field(default_factory=list)
     created_at: datetime

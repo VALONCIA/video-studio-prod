@@ -1,0 +1,25 @@
+:root {
+  color-scheme: dark;
+  --color-canvas: #141416;
+  --color-surface: #242428;
+  --color-text: #f3f3f5;
+  --color-text-secondary: #b5b5be;
+  --color-accent: #c2f47a;
+  --color-focus: #c2f47a;
+  --space-4: 0.25rem;
+  --space-12: 0.75rem;
+  --space-16: 1rem;
+  --space-24: 1.5rem;
+  --space-32: 2rem;
+  --space-48: 3rem;
+  --radius-control: 0.5rem;
+  --target-min: 2.75rem;
+  --focus-width: 2px;
+  --font-body:
+    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --text-body: 1rem;
+  --text-large: 1.5rem;
+  --weight-semibold: 600;
+  --line-body: 1.5;
+  --content-width: 72rem;
+}

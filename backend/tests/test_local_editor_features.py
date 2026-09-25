@@ -187,6 +187,8 @@ def test_captions_are_really_burned_in_not_just_reported(client, upload_asset, r
 
     cap_st, cap_out = _run_edit(env, "Add bold captions.")
     assert "captions_unavailable" not in cap_st["warnings"], cap_st["warnings"]
+    assert cap_st["insights"]["captions_added"] is True
+    assert "captions_added" not in plain_st["insights"]
     validate_output(cap_out, expect_audio=True)
 
     # Same source, same "keep the pacing tight"-free instruction shape, captioned vs not: sample a handful of
@@ -245,3 +247,4 @@ def test_captions_are_skipped_honestly_when_there_is_no_speech(client, upload_as
     st, _ = _run_edit({**real_engine, "client": client, "asset": a}, "Add captions please.")
     assert st["status"] == "completed"
     assert "captions_unavailable" in st["warnings"]
+    assert "captions_added" not in st["insights"]

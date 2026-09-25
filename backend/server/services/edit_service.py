@@ -11,6 +11,7 @@ Model:   Edit (version 1, kind=edit)
 
 from __future__ import annotations
 
+import math
 import uuid
 from typing import Any
 
@@ -25,6 +26,7 @@ from server.schemas.edit import (
     AssetOut,
     EditCreate,
     EditOut,
+    EditSourceOut,
     ProjectDetail,
     ProjectOut,
     VariantInfo,
@@ -135,7 +137,11 @@ def create_edit(session: Session, req: EditCreate, *, user_id: str, idempotency_
         raise AppError(ErrorCode.INVALID_REQUEST, "Too many source files.", 422)
 
     scoped_key = f"{user_id}:{idempotency_key}" if idempotency_key else None
-    fp = fingerprint_obj(req.model_dump(mode="json"))
+    body = req.model_dump(mode="json")
+    if req.project_name is None:
+        # Preserve fingerprints for mobile requests accepted before this optional field existed.
+        body.pop("project_name")
+    fp = fingerprint_obj(body)
     existing = _existing_by_key(session, scoped_key)
     if existing:
         return _replay(existing, fp), False
@@ -150,7 +156,8 @@ def create_edit(session: Session, req: EditCreate, *, user_id: str, idempotency_
     if req.project_id is not None:
         project = get_project(session, req.project_id, user_id)
     else:
-        project = Project(id=uuid.uuid4(), user_id=user_id, name=req.instruction[:48].strip() or "Untitled edit")
+        project = Project(id=uuid.uuid4(), user_id=user_id,
+                          name=req.project_name or req.instruction[:48].strip() or "Untitled edit")
         session.add(project)
     for a in assets:
         if a.project_id is None:
@@ -174,7 +181,7 @@ def _root_of(session: Session, gen: Generation) -> Generation:
     if gen.kind == "edit":
         return gen
     root = session.get(Generation, gen.parent_id) if gen.parent_id else None
-    if root is None:
+    if root is None or root.kind != "edit" or root.user_id != gen.user_id:
         raise AppError(ErrorCode.NOT_FOUND, "Edit not found.", 404)
     return root
 
@@ -360,9 +367,33 @@ def effective_instruction(session: Session, gen: Generation) -> str:
 
 
 def source_assets(session: Session, gen: Generation) -> list[Asset]:
-    ids = [uuid.UUID(i) for i in (gen.meta or {}).get("asset_ids", [])]
-    rows = {a.id: a for a in session.scalars(select(Asset).where(Asset.id.in_(ids)))} if ids else {}
-    return [rows[i] for i in ids if i in rows]
+    root = _root_of(session, gen)
+    ids = [uuid.UUID(i) for i in (root.meta or {}).get("asset_ids", [])]
+    rows = {a.id: a for a in session.scalars(select(Asset).where(
+        Asset.id.in_(ids), Asset.user_id == gen.user_id))} if ids else {}
+    if any(i not in rows for i in ids):
+        # Never shift CutRange.source indexes or sign another principal's asset.
+        raise AppError(ErrorCode.NOT_FOUND, "Source file not found.", 404)
+    return [rows[i] for i in ids]
+
+
+def _sources_out(session: Session, gen: Generation, storage: StorageService) -> list[EditSourceOut]:
+    root = _root_of(session, gen)
+    durations = (root.meta or {}).get("source_durations_seconds", [])
+    if not durations:
+        durations = (gen.meta or {}).get("source_durations_seconds", [])
+    assets = source_assets(session, gen)
+    sources = []
+    for index, asset in enumerate(assets):
+        duration = durations[index] if isinstance(durations, list) and index < len(durations) else None
+        if (isinstance(duration, bool) or not isinstance(duration, (int, float))
+                or not math.isfinite(duration) or duration <= 0):
+            duration = None
+        sources.append(EditSourceOut(
+            asset_id=asset.id, filename=asset.filename, duration_seconds=duration,
+            playback_url=storage.url_for(asset.storage_key) if asset.status == "uploaded" else None,
+        ))
+    return sources
 
 
 # --------------------------------------------------------------------------- output
@@ -404,6 +435,7 @@ def edit_out(session: Session, gen: Generation, storage: StorageService, *, with
         warnings=[w for w in meta.get("warnings", []) if isinstance(w, str)][:10],
         insights={k: v for k, v in (meta.get("insights") or {}).items() if isinstance(v, (int, float, bool))},
         kept_ranges=meta.get("kept_ranges", []),
+        sources=_sources_out(session, gen, storage),
         error=error, versions=versions,
         created_at=_aware(gen.created_at), started_at=_aware(gen.started_at), completed_at=_aware(gen.completed_at),
         updated_at=_aware(gen.updated_at),

@@ -301,6 +301,29 @@ def test_upload_failure_retries_then_reuses_render_without_rerunning_agent(env, 
     assert rt.calls == 1 and _get(gid).status == "completed"
 
 
+def test_upload_retry_preserves_verified_source_and_caption_metadata(env, tmp_path):
+    gid = _new(env)
+    storage = FlakyStorage(tmp_path / "s", failures=1)
+
+    def render(ctx):
+        result = MockRuntime(0.0).run_generation(ctx)
+        result.source_durations_seconds = [42.18, 17.5]
+        result.insights = {"captions_added": True, "retakes_removed": 2}
+        result.warnings = ["takes_unavailable"]
+        return result
+
+    runtime = ScriptedRuntime(render)
+    with pytest.raises(RetryableError):
+        _run(env, gid, runtime, storage=storage, attempt=0, max_retries=2)
+    assert _get(gid).meta["source_durations_seconds"] == [42.18, 17.5]
+    assert _run(env, gid, runtime, storage=storage, attempt=1, max_retries=2) == "completed"
+    assert runtime.calls == 1
+    meta = _get(gid).meta
+    assert meta["source_durations_seconds"] == [42.18, 17.5]
+    assert meta["insights"] == {"captions_added": True, "retakes_removed": 2}
+    assert meta["warnings"] == ["takes_unavailable"]
+
+
 def test_upload_failure_on_last_attempt_fails_with_storage_error(env, tmp_path):
     gid = _new(env)
     storage = FlakyStorage(tmp_path / "s", failures=99)

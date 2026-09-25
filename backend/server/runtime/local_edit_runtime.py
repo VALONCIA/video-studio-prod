@@ -120,7 +120,7 @@ class LocalEditRuntime(RuntimeOrchestrator):
             "warnings": warnings, "spent_usd": spent, "timeline": timeline,
         }
         result = self._render(ctx, spec)
-        result.insights = insights
+        result.insights = {**insights, **result.insights}
         result.kept_ranges = list(timeline or [])
         return result
 
@@ -263,7 +263,8 @@ class LocalEditRuntime(RuntimeOrchestrator):
             return RuntimeResult("timeout", error_code=ErrorCode.TIMEOUT.value, detail="edit timed out", provider=self.name)
         if p.event.get("ok"):
             return RuntimeResult("completed", provider=self.name, warnings=list(p.event.get("warnings", [])), turns=0,
-                                 llm_cost_usd=0.0)
+                                 llm_cost_usd=0.0, insights=dict(p.event.get("insights", {})),
+                                 source_durations_seconds=list(p.event.get("source_durations_seconds", [])))
         return RuntimeResult("failed", error_code=ErrorCode.GENERATION_FAILED.value,
                              detail=f"runner exit={p.returncode} error={p.event.get('error')} stderr={p.stderr!r}",
                              provider=self.name)
