@@ -1,25 +1,68 @@
 :root {
   color-scheme: dark;
-  --color-canvas: #141416;
-  --color-surface: #242428;
-  --color-text: #f3f3f5;
-  --color-text-secondary: #b5b5be;
-  --color-accent: #c2f47a;
-  --color-focus: #c2f47a;
+  /* Only tokens own color values. Feature styles use these semantic roles. */
+  --color-canvas: #0b0d13;
+  --color-surface: #141822;
+  --color-surface-raised: #1c2230;
+  --color-surface-pressed: #293144;
+  --color-media: #050609;
+  --color-text: #f7f8fc;
+  --color-text-secondary: #b6bdcc;
+  --color-text-muted: #8e98ad;
+  --color-accent: #a798ff;
+  --color-accent-ink: #111026;
+  --color-accent-soft: #292541;
+  --color-focus: #c8beff;
+  --color-success: #62d8b3;
+  --color-warning: #f2c878;
+  --color-danger: #ff8da1;
+  --color-danger-soft: #452934;
+  --color-scrim: rgb(3 5 10 / 76%);
+  --color-hairline: rgb(255 255 255 / 10%);
   --space-4: 0.25rem;
+  --space-8: 0.5rem;
   --space-12: 0.75rem;
   --space-16: 1rem;
+  --space-20: 1.25rem;
   --space-24: 1.5rem;
   --space-32: 2rem;
+  --space-40: 2.5rem;
   --space-48: 3rem;
-  --radius-control: 0.5rem;
+  --radius-small: 0.5rem;
+  --radius-control: 0.75rem;
+  --radius-card: 1rem;
+  --radius-media: 1.125rem;
+  --radius-sheet: 1.5rem;
+  --radius-pill: 999px;
   --target-min: 2.75rem;
   --focus-width: 2px;
   --font-body:
-    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', sans-serif;
+  --text-caption: 0.75rem;
+  --text-small: 0.875rem;
   --text-body: 1rem;
-  --text-large: 1.5rem;
+  --text-large: 1.25rem;
+  --text-title: clamp(1.75rem, 1.35rem + 1.5vw, 2.375rem);
+  --weight-medium: 500;
   --weight-semibold: 600;
+  --weight-bold: 700;
   --line-body: 1.5;
-  --content-width: 72rem;
+  --line-heading: 1.15;
+  --motion-fast: 160ms;
+  --motion-standard: 180ms;
+  --motion-slow: 220ms;
+  --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --content-width: 90rem;
+  --onboarding-width: 35rem;
+  --workspace-source-width: 14rem;
+  --workspace-inspector-width: 21.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-standard: 0ms;
+    --motion-slow: 0ms;
+  }
 }

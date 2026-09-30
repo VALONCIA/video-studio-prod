@@ -1,7 +1,14 @@
 @import './tokens.css';
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+html {
+  min-width: 20rem;
+  background: var(--color-canvas);
 }
 
 body {
@@ -11,27 +18,29 @@ body {
   font-family: var(--font-body);
   font-size: var(--text-body);
   line-height: var(--line-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: var(--color-accent);
 }
 
 p {
   color: var(--color-text-secondary);
-}
-
-a,
-button {
-  min-height: var(--target-min);
-  display: inline-flex;
-  align-items: center;
-  color: var(--color-accent);
-}
-
-button {
-  border: 0;
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  padding: var(--space-12) var(--space-16);
-  font: inherit;
-  cursor: pointer;
 }
 
 :focus-visible {
@@ -39,12 +48,18 @@ button {
   outline-offset: var(--space-4);
 }
 
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    animation: none !important;
-    transition: none !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -1,18 +1,9 @@
-import { createRootRoute, Link } from '@tanstack/react-router';
+import { createRootRoute } from '@tanstack/react-router';
+import { NotFoundRecovery, RouteErrorRecovery } from '@/app/Recovery';
 import { Shell } from '@/app/Shell';
 
 export const Route = createRootRoute({
   component: Shell,
-  notFoundComponent: () => (
-    <>
-      <h1>Page not found</h1>
-      <Link to="/">Return home</Link>
-    </>
-  ),
-  errorComponent: ({ reset }) => (
-    <section role="alert">
-      <h1>This page couldn’t open</h1>
-      <button onClick={reset}>Try again</button>
-    </section>
-  ),
+  notFoundComponent: NotFoundRecovery,
+  errorComponent: ({ reset }) => <RouteErrorRecovery onRetry={reset} />,
 });

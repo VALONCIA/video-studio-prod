@@ -1,0 +1,429 @@
+.button,
+.iconButton {
+  min-height: var(--target-min);
+  border: 0;
+  border-radius: var(--radius-control);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  font-weight: var(--weight-semibold);
+  line-height: 1.25;
+  text-decoration: none;
+  transition:
+    background-color var(--motion-standard) var(--ease-standard),
+    color var(--motion-standard) var(--ease-standard),
+    opacity var(--motion-standard) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.button {
+  padding: var(--space-12) var(--space-20);
+}
+
+.button:active:not(:disabled),
+.iconButton:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.button:disabled,
+.iconButton:disabled {
+  opacity: 0.52;
+}
+
+.primary {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-focus);
+}
+
+.secondary {
+  background: var(--color-surface-pressed);
+  color: var(--color-text);
+}
+
+.secondary:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+}
+
+.tertiary {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.tertiary:hover:not(:disabled) {
+  background: var(--color-surface-pressed);
+  color: var(--color-text);
+}
+
+.danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.danger:hover:not(:disabled) {
+  background: var(--color-surface-pressed);
+}
+
+.iconButton {
+  width: var(--target-min);
+  padding: 0;
+  flex: none;
+}
+
+.spinner {
+  width: var(--space-16);
+  height: var(--space-16);
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.segmentedGroup {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.groupLabel {
+  margin-bottom: var(--space-12);
+  color: var(--color-text);
+  font-weight: var(--weight-semibold);
+}
+
+.segmentedOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.segment {
+  position: relative;
+  min-width: min(100%, 9rem);
+  flex: 1 1 9rem;
+  cursor: pointer;
+}
+
+.segment input {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.segmentContent {
+  min-height: var(--target-min);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  transition:
+    background-color var(--motion-standard) var(--ease-standard),
+    color var(--motion-standard) var(--ease-standard),
+    opacity var(--motion-standard) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.segment:active .segmentContent {
+  transform: scale(0.98);
+}
+
+.segment input:checked + .segmentContent {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
+.segment input:focus-visible + .segmentContent {
+  outline: var(--focus-width) solid var(--color-focus);
+  outline-offset: var(--space-4);
+}
+
+.segment input:disabled + .segmentContent,
+.segmentedGroup:disabled .segmentContent {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.segmentLabel {
+  font-weight: var(--weight-semibold);
+}
+
+.segmentTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.segmentDescription {
+  color: var(--color-text-secondary);
+  font-size: var(--text-small);
+}
+
+.progress {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.progressHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-12);
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+}
+
+.progressTrack {
+  height: var(--space-8);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-pressed);
+}
+
+.progressFill {
+  display: block;
+  width: var(--progress-width, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+  transition: width var(--motion-slow) var(--ease-standard);
+}
+
+.progressIndeterminate {
+  width: 36%;
+  animation: progressSweep 1600ms ease-in-out infinite alternate;
+}
+
+@keyframes progressSweep {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(180%);
+  }
+}
+
+.progressDetail {
+  margin: 0;
+  font-size: var(--text-small);
+}
+
+.state {
+  min-height: 12rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-32);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+
+.stateIcon {
+  color: var(--color-text-muted);
+}
+
+.errorIcon {
+  color: var(--color-danger);
+}
+
+.state h2 {
+  margin: var(--space-16) 0 var(--space-4);
+  font-size: var(--text-large);
+  line-height: var(--line-heading);
+}
+
+.state p {
+  max-width: 38ch;
+  margin: 0;
+}
+
+.stateAction {
+  margin-top: var(--space-24);
+}
+
+.dialogOverlay {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  background: var(--color-scrim);
+  animation: fadeIn var(--motion-standard) var(--ease-standard);
+}
+
+.dialogContent {
+  position: fixed;
+  z-index: 21;
+  top: 50%;
+  left: 50%;
+  width: min(calc(100vw - var(--space-32)), 32rem);
+  max-height: calc(100dvh - var(--space-32));
+  overflow-y: auto;
+  padding: var(--space-24);
+  border-radius: var(--radius-sheet);
+  background: var(--color-surface-raised);
+  transform: translate(-50%, -50%);
+  animation: dialogIn var(--motion-slow) var(--ease-standard);
+}
+
+.dialogHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
+
+.dialogTitle {
+  margin: 0;
+  font-size: var(--text-large);
+  line-height: var(--line-heading);
+}
+
+.dialogDescription {
+  margin: var(--space-12) 0 var(--space-20);
+  color: var(--color-text-secondary);
+}
+
+.dialogFooter {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  margin-top: var(--space-24);
+}
+
+.tabsRoot {
+  min-width: 0;
+}
+
+.tabsList {
+  display: flex;
+  overflow-x: auto;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+}
+
+.tabTrigger {
+  min-height: var(--target-min);
+  min-width: var(--target-min);
+  flex: 1 0 auto;
+  padding: var(--space-8) var(--space-12);
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-weight: var(--weight-semibold);
+  transition:
+    background-color var(--motion-standard) var(--ease-standard),
+    color var(--motion-standard) var(--ease-standard),
+    opacity var(--motion-standard) var(--ease-standard);
+}
+
+.tabTrigger[data-state='active'] {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
+.tabTrigger:disabled {
+  opacity: 0.5;
+}
+
+.tabContent {
+  min-width: 0;
+  padding-top: var(--space-16);
+  animation: fadeIn var(--motion-standard) var(--ease-standard);
+}
+
+.tooltip {
+  z-index: 30;
+  max-width: 18rem;
+  padding: var(--space-8) var(--space-12);
+  border-radius: var(--radius-small);
+  background: var(--color-surface-pressed);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  animation: fadeIn var(--motion-fast) var(--ease-standard);
+}
+
+.mediaFrame {
+  width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-media);
+  background: var(--color-media);
+}
+
+.mediaFrame > video,
+.mediaFrame > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mediaEmpty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-12);
+  padding: var(--space-24);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button:active:not(:disabled),
+  .iconButton:active:not(:disabled),
+  .segment:active .segmentContent {
+    transform: none;
+  }
+
+  .dialogContent {
+    animation-name: fadeIn;
+  }
+
+  .progressIndeterminate {
+    width: 36%;
+    animation: none;
+    opacity: 0.7;
+  }
+}

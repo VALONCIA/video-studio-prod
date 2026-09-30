@@ -1,0 +1,29 @@
+.panel {
+  width: min(100%, var(--onboarding-width));
+  margin: var(--space-48) auto;
+  padding: var(--space-32);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+
+.panel h1 {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--line-heading);
+}
+
+.panel p {
+  margin: var(--space-16) 0 0;
+}
+
+.action {
+  display: flex;
+  margin-top: var(--space-24);
+}
+
+@media (max-width: 599px) {
+  .panel {
+    margin: var(--space-24) auto;
+    padding: var(--space-24);
+  }
+}

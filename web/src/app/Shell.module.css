@@ -19,6 +19,12 @@
   gap: var(--space-16);
 }
 
+.nav a {
+  min-height: var(--target-min);
+  display: inline-flex;
+  align-items: center;
+}
+
 .brand {
   font-size: var(--text-large);
   font-weight: var(--weight-semibold);

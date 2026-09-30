@@ -1,0 +1,307 @@
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.brand {
+  color: var(--color-text);
+  font-size: var(--text-large);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.04em;
+}
+
+.onboarding {
+  min-height: 100dvh;
+  padding: var(--space-24);
+  background: var(--color-canvas);
+}
+
+.onboardingHeader {
+  max-width: var(--content-width);
+  min-height: var(--target-min);
+  margin: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+}
+
+.onboardingMain {
+  width: min(100%, var(--onboarding-width));
+  margin: clamp(var(--space-48), 10vh, 6rem) auto var(--space-48);
+}
+
+.stepLabel {
+  margin: 0 0 var(--space-12);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+}
+
+.stepTrack {
+  display: flex;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stepTrack li {
+  flex: 1;
+  height: var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-pressed);
+  transition: background-color var(--motion-standard) var(--ease-standard);
+}
+
+.stepTrack .stepReached {
+  background: var(--color-accent);
+}
+
+.onboardingContent {
+  animation: contentIn var(--motion-slow) var(--ease-standard);
+}
+
+.onboardingTitle {
+  margin: var(--space-48) 0 var(--space-32);
+  text-align: center;
+}
+
+.onboardingTitle h1 {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--line-heading);
+  letter-spacing: -0.035em;
+}
+
+.onboardingTitle p {
+  margin: var(--space-12) 0 0;
+}
+
+.workspace {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-canvas);
+}
+
+.workspaceHeader {
+  min-height: 4rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-24);
+  padding: var(--space-8) var(--space-20);
+  background: var(--color-surface);
+  box-shadow: 0 1px var(--color-hairline);
+}
+
+.workspaceIdentity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.workspaceIdentity strong,
+.projectName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectName {
+  color: var(--color-text-secondary);
+}
+
+.workspaceIdentity > svg {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.versionName {
+  flex: none;
+  margin-left: var(--space-4);
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-small);
+  background: var(--color-surface-pressed);
+  color: var(--color-text-secondary);
+  font-size: var(--text-small);
+}
+
+.headerActions {
+  margin-left: auto;
+}
+
+.workspaceToolbar {
+  display: none;
+}
+
+.paneSwitch {
+  display: none;
+}
+
+.workspaceGrid {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns:
+    var(--workspace-source-width)
+    minmax(0, 1fr)
+    var(--workspace-inspector-width);
+}
+
+.sourcesPane,
+.canvasPane,
+.inspectorPane {
+  min-width: 0;
+  padding: var(--space-20);
+}
+
+.sourcesPane,
+.inspectorPane {
+  background: var(--color-surface);
+}
+
+.sourcesPane {
+  box-shadow: 1px 0 var(--color-hairline);
+}
+
+.inspectorPane {
+  box-shadow: -1px 0 var(--color-hairline);
+}
+
+.canvasPane {
+  display: block;
+  background: var(--color-canvas);
+}
+
+@keyframes contentIn {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-8));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 960px) and (max-width: 1359px) {
+  .workspaceToolbar {
+    min-height: var(--target-min);
+    display: flex;
+    align-items: center;
+    padding: var(--space-4) var(--space-12);
+    background: var(--color-surface);
+  }
+
+  .workspaceGrid {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr) var(--workspace-inspector-width);
+  }
+
+  .sourcesPane {
+    position: absolute;
+    z-index: 5;
+    inset: 0 auto 0 0;
+    width: var(--workspace-source-width);
+    box-shadow: 1px 0 var(--color-hairline);
+    transform: translateX(-100%);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      transform var(--motion-slow) var(--ease-standard),
+      opacity var(--motion-slow) var(--ease-standard),
+      visibility var(--motion-slow) var(--ease-standard);
+  }
+
+  .workspaceGrid[data-sources-open='true'] .sourcesPane {
+    transform: translateX(0);
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+@media (max-width: 959px) {
+  .workspaceHeader {
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-16);
+    padding: var(--space-12) var(--space-16);
+  }
+
+  .workspaceIdentity {
+    order: 2;
+    width: 100%;
+  }
+
+  .headerActions {
+    margin-left: auto;
+  }
+
+  .workspaceToolbar {
+    display: block;
+    padding: var(--space-8) var(--space-12);
+    background: var(--color-surface);
+  }
+
+  .paneSwitch {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+
+  .paneSwitch button {
+    min-width: 0;
+  }
+
+  .mediumSourceToggle {
+    display: none;
+  }
+
+  .workspaceGrid {
+    display: block;
+  }
+
+  .sourcesPane,
+  .canvasPane,
+  .inspectorPane {
+    display: none;
+    min-height: calc(100dvh - 10rem);
+    padding: var(--space-16);
+    box-shadow: none;
+  }
+
+  .workspaceGrid[data-active-pane='sources'] .sourcesPane,
+  .workspaceGrid[data-active-pane='canvas'] .canvasPane,
+  .workspaceGrid[data-active-pane='inspector'] .inspectorPane {
+    display: block;
+  }
+}
+
+@media (max-width: 599px) {
+  .onboarding {
+    padding: var(--space-16);
+  }
+
+  .onboardingMain {
+    margin-top: var(--space-48);
+  }
+
+  .onboardingTitle {
+    margin: var(--space-40) 0 var(--space-24);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboardingContent {
+    animation-name: none;
+  }
+
+  .sourcesPane {
+    transform: none;
+  }
+}
