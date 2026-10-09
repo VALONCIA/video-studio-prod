@@ -13,7 +13,7 @@ npm run typecheck
 npm test -- --run
 ```
 
-Set `VITE_API_BASE_URL` in the environment or copy `.env.example` to `.env.local` before `npm run build`. Production builds deliberately fail when this value is absent or invalid, including builds with a custom mode. Development defaults to `http://localhost:8000`. The deployed API is `https://video-studio-prod-production.up.railway.app`.
+Set `VITE_API_BASE_URL` in the environment or copy `.env.example` to `.env.local` before `npm run build`. Production builds deliberately fail when this value is absent or invalid, including builds with a custom mode. Development defaults to `http://localhost:8000`. The deployed API is `https://video-studio-prod-production-9563.up.railway.app`.
 
 `VITE_*` values are public and appear in the browser bundle: never add tokens, provider keys, storage credentials, or other secrets. Only the API URL is consumed by the application configuration module.
 

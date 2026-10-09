@@ -15,7 +15,7 @@ import 'support/fake_backend.dart';
 
 void main() {
   test('the base URL is centralized and defaults to the production API', () {
-    expect(ApiConfig.baseUrl, 'https://video-studio-prod-production.up.railway.app');
+    expect(ApiConfig.baseUrl, 'https://video-studio-prod-production-9563.up.railway.app');
   });
 
   test('Capabilities.captions reads features.captions honestly (false unless the backend actually reports it)', () {

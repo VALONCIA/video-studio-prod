@@ -10,7 +10,7 @@
 abstract final class ApiConfig {
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://video-studio-prod-production.up.railway.app',
+    defaultValue: 'https://video-studio-prod-production-9563.up.railway.app',
   );
 
   /// Development bearer token (see the security note above). Empty when not provided.
