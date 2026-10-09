@@ -1,131 +1,142 @@
-"""Session-wide test safety net.
-
-**No test may open a network connection.** Provider tools bill per call, so a
-test that reaches a real endpoint costs the developer money — silently, and
-every time CI runs. This blocks outbound sockets for the whole test session.
-
-The guard is at the socket layer on purpose. Patching `requests` only covers
-tools that use `requests`; the fleet also talks to vendor SDKs (google-cloud,
-openai, boto3), `httpx`, and raw `urllib`. Everything bottoms out in
-`socket.connect`, so that is where the wall goes.
-
-Loopback is still allowed — local servers, ffmpeg RPC, and Backlot fixtures need it.
-
-To write a test that genuinely hits a live API:
-
-    @pytest.mark.live_api
-    def test_real_call():
-        ...
-
-Marked tests are **skipped by default** and only run with the env flag set:
-
-    OPENMONTAGE_ALLOW_NETWORK=1 pytest -m live_api
-
-Limitation: this guards the pytest process. A test that shells out to a
-subprocess (node, ffmpeg, npx) is outside its reach — don't call paid APIs
-from a subprocess in tests.
-"""
+"""Shared fixtures. Every test runs against an isolated SQLite DB, fakeredis,
+local storage in a tmp dir, and the mock runtime. Nothing here can reach a paid
+provider or the network."""
 
 from __future__ import annotations
 
 import os
-import socket
+import shutil
+import sys
+from pathlib import Path
 
+import fakeredis
 import pytest
 
-_ALLOW_ENV_FLAG = "OPENMONTAGE_ALLOW_NETWORK"
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
 
-_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}
-
-_real_connect = socket.socket.connect
-_real_connect_ex = socket.socket.connect_ex
-_real_create_connection = socket.create_connection
+TEST_TOKEN = "test-token-0123456789abcdef0123456789"
 
 
-class NetworkCallInTestError(RuntimeError):
-    """Raised when a test tries to open a non-loopback connection."""
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    engine = tmp_path / "engine"
+    (engine / "pipeline_defs").mkdir(parents=True)
+    shutil.copy(BACKEND / "openmontage" / "pipeline_defs" / "app-cinematic.yaml", engine / "pipeline_defs")
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DEV_API_TOKEN", TEST_TOKEN)
+    # TEST_DATABASE_URL lets the whole suite run against a real Postgres (tables are dropped/recreated).
+    external_db = os.environ.get("TEST_DATABASE_URL")
+    monkeypatch.setenv("DATABASE_URL", external_db or f"sqlite+pysqlite:///{tmp_path / 'test.db'}")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6399/0")
+    monkeypatch.setenv("ORCHESTRATOR_PROVIDER", "mock")
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("LOCAL_STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("OPENMONTAGE_DIR", str(engine))
+    monkeypatch.setenv("AGENT_TRANSCRIPT_DIR", str(tmp_path / "agent-logs"))
+    monkeypatch.setenv("CANCEL_POLL_SECONDS", "0.05")
+
+    from server.core import config
+    from server.db import session as dbsession
+    from server.services import ratelimit, storage
+
+    def reset():
+        config.reset_settings_cache()
+        dbsession.reset_engine_cache()
+        storage.reset_storage_cache()
+        ratelimit.get_rate_limiter.cache_clear()
+        ratelimit.get_redis.cache_clear()
+
+    reset()
+    from server.db.base import Base
+    from server.db import models  # noqa: F401
+
+    if external_db:
+        Base.metadata.drop_all(dbsession.get_engine())
+    Base.metadata.create_all(dbsession.get_engine())
+    yield {"tmp": tmp_path, "engine": engine, "settings": config.get_settings()}
+    reset()
 
 
-def _network_allowed() -> bool:
-    return os.environ.get(_ALLOW_ENV_FLAG, "").strip().lower() in {"1", "true", "yes"}
+@pytest.fixture()
+def fake_redis():
+    return fakeredis.FakeRedis(decode_responses=True)
 
 
-def _is_loopback(address) -> bool:
-    """True for loopback TCP/UDP targets and for AF_UNIX socket paths."""
-    if isinstance(address, (str, bytes)):
-        return True  # AF_UNIX / abstract socket — local by definition
-    if not isinstance(address, (tuple, list)) or not address:
-        return True  # unrecognised shape; let the real call decide
-    host = address[0]
-    if isinstance(host, bytes):
-        host = host.decode("utf-8", "replace")
-    if not isinstance(host, str):
-        return False
-    host = host.strip("[]").lower()
-    if host in _LOOPBACK_HOSTS:
-        return True
-    return host.startswith("127.")
+@pytest.fixture()
+def enqueued():
+    return []
 
 
-def _blocked(address) -> NetworkCallInTestError:
-    return NetworkCallInTestError(
-        f"Blocked a network connection to {address!r} during a test.\n"
-        f"\n"
-        f"Tests must not call real endpoints — provider APIs bill per request.\n"
-        f"Mock the transport instead (see tests/tools/test_atlas_video.py for the\n"
-        f"fake-`requests` pattern), or mark the test @pytest.mark.live_api and run\n"
-        f"it deliberately with {_ALLOW_ENV_FLAG}=1."
-    )
+@pytest.fixture()
+def client(env, fake_redis, enqueued):
+    from fastapi.testclient import TestClient
+
+    from server.api.main import create_app
+    from server.services.ratelimit import RateLimiter
+
+    app = create_app(env["settings"])
+    limiter = RateLimiter(fake_redis)
+    app.state.get_redis = lambda: fake_redis
+    app.state.get_rate_limiter = lambda: limiter
+    app.state.enqueue = lambda gid: enqueued.append(gid) or "task"
+    with TestClient(app) as c:
+        c.headers.update({"Authorization": f"Bearer {TEST_TOKEN}"})
+        c.app_ = app
+        yield c
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _block_network():
-    """Refuse non-loopback sockets for the entire session."""
-    if _network_allowed():
-        yield
-        return
-
-    def guarded_connect(self, address, *args, **kwargs):
-        if not _is_loopback(address):
-            raise _blocked(address)
-        return _real_connect(self, address, *args, **kwargs)
-
-    def guarded_connect_ex(self, address, *args, **kwargs):
-        if not _is_loopback(address):
-            raise _blocked(address)
-        return _real_connect_ex(self, address, *args, **kwargs)
-
-    def guarded_create_connection(address, *args, **kwargs):
-        if not _is_loopback(address):
-            raise _blocked(address)
-        return _real_create_connection(address, *args, **kwargs)
-
-    socket.socket.connect = guarded_connect
-    socket.socket.connect_ex = guarded_connect_ex
-    socket.create_connection = guarded_create_connection
-    try:
-        yield
-    finally:
-        socket.socket.connect = _real_connect
-        socket.socket.connect_ex = _real_connect_ex
-        socket.create_connection = _real_create_connection
+VALID_BODY = {
+    "prompt": "Create a cinematic short about a futuristic city waking up at sunrise.",
+    "duration_seconds": 30,
+    "aspect_ratio": "9:16",
+    "style": "cinematic",
+    "pipeline": "app-cinematic",
+    "voice_enabled": True,
+    "captions_enabled": True,
+    "quality": "standard",
+}
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "live_api: test performs a real, billable API call. Skipped unless "
-        f"{_ALLOW_ENV_FLAG}=1 is set.",
-    )
+@pytest.fixture()
+def valid_body():
+    return dict(VALID_BODY)
 
 
-def pytest_collection_modifyitems(config, items):
-    """Skip live_api tests unless the operator explicitly opted in."""
-    if _network_allowed():
-        return
-    skip = pytest.mark.skip(
-        reason=f"live API test — costs money; set {_ALLOW_ENV_FLAG}=1 to run"
-    )
-    for item in items:
-        if "live_api" in item.keywords:
-            item.add_marker(skip)
+FIXTURE_VIDEO = Path(__file__).parent / "fixtures" / "test_ugc.mp4"
+
+
+@pytest.fixture()
+def real_engine(env, monkeypatch):
+    """Point the worker at the real OpenMontage engine dir (needed by the deterministic editor).
+    Job workspaces created by the test are removed afterwards."""
+    from server.core import config
+
+    real = BACKEND / "openmontage"
+    monkeypatch.setenv("OPENMONTAGE_DIR", str(real))
+    monkeypatch.setenv("ORCHESTRATOR_PROVIDER", "local_edit")
+    config.reset_settings_cache()
+    before = set((real / "projects").glob("*")) if (real / "projects").exists() else set()
+    yield {**env, "engine": real, "settings": config.get_settings()}
+    for d in set((real / "projects").glob("*")) - before:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture()
+def upload_asset(client):
+    """Upload a local file through the real presign -> PUT -> complete flow; returns the asset json."""
+
+    def _upload(path: Path = FIXTURE_VIDEO, content_type: str = "video/mp4", project_id: str | None = None) -> dict:
+        body = {"filename": path.name, "content_type": content_type, "purpose": "source_video", "size_bytes": path.stat().st_size}
+        if project_id:
+            body["project_id"] = project_id
+        pre = client.post("/v1/uploads/presign", json=body)
+        assert pre.status_code == 200, pre.text
+        p = pre.json()
+        put = client.put(p["url"], content=path.read_bytes(), headers={**p["headers"], "Authorization": ""})
+        assert put.status_code == 200, put.text
+        done = client.post(f"/v1/uploads/{p['asset_id']}/complete")
+        assert done.status_code == 200, done.text
+        return done.json()
+
+    return _upload

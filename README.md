@@ -1,786 +1,235 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/monty-dark.svg">
-    <img src="assets/monty-light.svg" alt="Monty the Clapper — the official mascot of OpenMontage" width="200">
-  </picture>
-</p>
+# Backend
 
-<p align="center"><sub><em>Monty the Clapper — the official mascot of OpenMontage</em></sub></p>
+FastAPI API + Celery worker + vendored OpenMontage engine, in one Docker image.
 
-<h1 align="center">OpenMontage</h1>
+## How a generation runs
 
-<p align="center"><strong>The first open-source, agentic video production system.</strong></p>
+1. `POST /v1/generations` validates the request, inserts a `generations` row (`queued`), enqueues
+   `server.worker.tasks.run_generation(<id>)` on Redis and returns **202** without waiting.
+2. The worker claims the job (`starting` -> `running`), creates `openmontage/projects/<generation-uuid>/`
+   and starts the runtime selected by `ORCHESTRATOR_PROVIDER`.
+3. **Claude runtime** (`server/runtime/claude_agent_runtime.py`): OpenMontage has no `generate()` API - the coding agent *is*
+   its control plane (reads `AGENT_GUIDE.md`, the pipeline YAML and stage-director skills, calls registry tools, writes
+   checkpoints). The runtime therefore spawns `server.runtime.claude_agent_runner` in a **separate process with an allowlisted
+   environment**, feeding it a server-built prompt (system rules + JOB/SETTINGS + the user's brief as delimited DATA).
+   If the agent ends early it is resumed (`AGENT_MAX_CONTINUATIONS`).
+4. While it runs, the worker polls every `CANCEL_POLL_SECONDS`: cancel requested? SIGTERM? provider spend over
+   `MAX_JOB_BUDGET_USD`? a stage stuck on a human gate? It also maps `checkpoint_<stage>.json` -> `progress` /
+   `current_stage` (`server/services/checkpoint_monitor.py`) and persists them. Progress is `5 + 85 * (done stages + partial) / stages`,
+   capped at 90 by the pipeline; validation/upload own the rest, so 100 only means "deliverable".
+5. On success: locate `renders/final.mp4` -> **ffprobe validation** (video stream, duration > 0, size > 0, audio when
+   narration was requested) -> thumbnail -> upload to storage (`generations/<id>/final.mp4`, `thumbnail.jpg`) -> persist keys ->
+   `completed` -> delete large local media. Nothing is `completed` before the upload succeeded.
+6. Failures store a sanitized code (`GENERATION_FAILED`, `BUDGET_EXCEEDED`, `STORAGE_FAILED`, `OUTPUT_INVALID`, `TIMEOUT`, ...)
+   and log the detail server-side. Clients only ever see fixed messages.
 
-<p align="center">
-  <a href="https://openmontage.video"><img src="https://img.shields.io/badge/Website-openmontage.video-d14a28?style=for-the-badge" alt="openmontage.video"></a>
-</p>
+Storage upload errors are retried by Celery with backoff; a retry **reuses the already-rendered video** instead of paying to
+re-run the agent. Worker death is covered by `acks_late` + `reject_on_worker_lost`; SIGTERM (Railway deploy) stops the agent,
+puts the job back to `queued` and re-publishes it.
 
-<p align="center">
-  <a href="#start-from-a-video-you-already-love">Paste A Video</a> &nbsp;·&nbsp;
-  <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
-  <a href="#try-these-prompts">Try These Prompts</a> &nbsp;·&nbsp;
-  <a href="#pipelines">Pipelines</a> &nbsp;·&nbsp;
-  <a href="#how-it-works">How It Works</a> &nbsp;·&nbsp;
-  <a href="#sponsors">Sponsors</a> &nbsp;·&nbsp;
-  <a href="docs/PROVIDERS.md">Providers</a> &nbsp;·&nbsp;
-  <a href="docs/PR_REVIEW_GUIDE.md">Review Guide</a> &nbsp;·&nbsp;
-  <a href="AGENT_GUIDE.md">Agent Guide</a>
-</p>
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-blue.svg" alt="License"></a>
-</p>
+### Storage providers (S3-compatible)
 
-<p align="center">
-  <a href="https://github.com/trending">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/repo-of-the-day-dark.svg">
-      <img alt="🏆 #1 Repository of the Day on GitHub Trending" src=".github/assets/repo-of-the-day-light.svg" height="60">
-    </picture>
-  </a>
-</p>
+`STORAGE_BACKEND=s3` (or `r2`) works with any S3-compatible store. Preferred variable names: `S3_ENDPOINT_URL`,
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `S3_REGION`, `S3_PUBLIC_BASE_URL` (the older `R2_*` names still work).
 
-<p align="center"><strong>Follow The Build</strong></p>
+| Provider | `S3_ENDPOINT_URL` | `S3_REGION` | `S3_ADDRESSING_STYLE` | `S3_PUBLIC_BASE_URL` (optional) |
+|---|---|---|---|---|
+| Supabase Storage | `https://<project-ref>.storage.supabase.co/storage/v1/s3` | your project's region, e.g. `ap-south-1` | `path` | `https://<project-ref>.supabase.co/storage/v1/object/public/<bucket>` (public bucket) |
+| Railway Buckets | Railway credential endpoint | `auto` | `virtual` | leave unset (signed URLs) |
+| Cloudflare R2 | `https://<account-id>.r2.cloudflarestorage.com` | `auto` | `path` | the bucket's public r2.dev / custom domain |
 
-<p align="center">
-  <a href="https://www.youtube.com/@OpenMontage"><img src="https://img.shields.io/badge/YouTube-%40OpenMontage-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
-  <a href="https://x.com/calesthioailabs"><img src="https://img.shields.io/badge/X-%40calesthioailabs-111111?style=for-the-badge&logo=x&logoColor=white" alt="X"></a>
-  <a href="https://github.com/calesthio/OpenMontage/discussions"><img src="https://img.shields.io/badge/Community-GitHub%20Discussions-0b1220?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Discussions"></a>
-</p>
+Supabase: create a bucket (Storage), then Project Settings -> Storage -> S3 Connection -> create access keys. Those keys
+have full access to every bucket in the project: keep them on Railway (api + worker) only. Watch the plan's per-file upload
+limit (the free plan's is small; raw UGC clips are often larger) and egress allowance.
 
-## Sponsors
+### Runtimes
 
-> Want to support OpenMontage? [Sponsor the project](https://github.com/sponsors/calesthio).
+`ORCHESTRATOR_PROVIDER` selects one; `server/runtime/base.py` is the only contract the rest of the backend imports.
 
-<details open>
-<summary>Click to collapse</summary>
+| value | what |
+|---|---|
+| `claude_agent_sdk` | real generation (needs `ANTHROPIC_API_KEY` + provider keys on the **worker**) |
+| `mock` | zero-cost: writes real checkpoints, renders a 2 s MP4 with ffmpeg. Tests, compose default, smoke tests |
 
-<table>
-<tr>
-<td width="180" align="center"><a href="https://bloome.im/app?ref=calesthio&utm_medium=github&utm_source=calesthio-OpenMontage-ivor-202607"><img src="assets/sponsors/bloome.png" alt="Bloome" width="150"></a></td>
-<td><strong>Bloome</strong> lets multiple AI agents (Claude, ChatGPT, DeepSeek, and more) collaborate in one conversation for agentic video pipelines. It has zero setup, runs in the cloud, works on web and mobile, and lets you share a configured agent with your whole team. <strong><a href="https://bloome.im/app?ref=calesthio&utm_medium=github&utm_source=calesthio-OpenMontage-ivor-202607">Try Bloome</a></strong>.</td>
-</tr>
-<tr>
-<td width="180" align="center"><a href="https://www.atlascloud.ai/coding-plan"><img src="assets/sponsors/atlas-cloud.png" alt="Atlas Cloud" width="150"></a></td>
-<td><strong>Atlas Cloud</strong> is a full-modal AI inference platform that gives developers a single AI API for video generation, image generation, and LLM APIs. Instead of managing multiple vendor integrations, you connect once and get unified access to 300+ curated models across all modalities. Check out Atlas Cloud's new <a href="https://www.atlascloud.ai/coding-plan">coding plan</a> promotion for more budget-friendly API access.</td>
-</tr>
-</table>
+### The app pipeline
 
-</details>
+Upstream pipelines have human approval gates (`human_approval_default: true`) and `lib/checkpoint.py` refuses to write a gated
+stage as `completed` without `human_approved=True`. We do not fake approvals. `openmontage/pipeline_defs/app-cinematic.yaml`
+(derived from `cinematic.yaml`, reusing its director skills/tools) has all gates off, drops the human-facing `publish` stage and
+keeps checkpoints, schema validation, self-review, cost governance and render verification. The API whitelist
+(`server/services/pipelines.py`) exposes only this pipeline.
 
----
+## Configuration
 
-Turn your AI coding assistant into a full video production studio. Describe what you want in plain language — your agent handles research, scripting, asset generation, editing, and final composition.
+See [.env.example](.env.example) (provider variables are copied verbatim from upstream's `.env.example`). Key points:
 
-**Important distinction:** OpenMontage can make image-based videos, but it can also make a real **video video** for free/open-source workflows: the agent builds a corpus from free stock footage and open archives, retrieves actual motion clips, edits them into a timeline, and renders a finished piece. That is not the usual "animate a handful of stills and call it video" trick.
+- `DATABASE_URL` accepts Railway's `postgresql://` form. `ENABLE_API_DOCS` defaults to off in production.
+- The container fallback is SQLite at `/workspace/storage/dev.db`; its parent directory is created automatically. This is
+  useful for a single-container trial or an attached volume, but API + worker deployments must share Postgres by setting
+  `DATABASE_URL` on both services.
+- Production `AUTH_MODE=device_session` requires `DEVICE_AUTH_SECRET` (>= 32 chars). The mobile app exchanges a random per-install UUID for a signed anonymous session; no backend secret is shipped in the APK. `AUTH_MODE=dev_token` remains available for local development and requires `DEV_API_TOKEN` (>= 24 chars).
+- `STORAGE_BACKEND=r2` needs `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. With
+  `R2_PUBLIC_BASE_URL` set, URLs are public/CDN; without it they are signed and expire after `SIGNED_URL_TTL_SECONDS`.
+  The DB stores object **keys**; URLs are derived at read time.
+- `GENERATION_SOFT_TIMEOUT_SECONDS` < `GENERATION_HARD_TIMEOUT_SECONDS` < `CELERY_VISIBILITY_TIMEOUT_SECONDS` (validated).
 
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/f77ce7a4-68b8-4f94-a287-e94bf50a32e1" width="100%" controls></video>
-</div>
+| Service | needs |
+|---|---|
+| api | `APP_ENV`, `AUTH_MODE`, `DEVICE_AUTH_SECRET` (or `DEV_API_TOKEN` locally), `DATABASE_URL`, `REDIS_URL`, (R2 vars if presigning uploads / signed URLs) |
+| worker | `APP_ENV`, `DATABASE_URL`, `REDIS_URL`, `ORCHESTRATOR_PROVIDER`, `ANTHROPIC_API_KEY`, `MAX_JOB_BUDGET_USD`, R2 vars, provider keys |
 
-> **"SIGNAL FROM TOMORROW"** — a cinematic sci-fi trailer fully produced through OpenMontage: concept, script, scene plan, Veo-generated motion clips, soundtrack, and Remotion composition.
+`/v1/capabilities` is computed by the **worker** from the real OpenMontage registry (`discover()` +
+`provider_menu_summary()`), reduced to counts/booleans, and published to Redis every 5 minutes. The API (which has no provider
+keys) serves that snapshot; until a worker reports it says `status: "unknown"`, and once a worker reports
+`generation_available: false`, `POST /v1/generations` returns 503 instead of queueing a doomed job.
 
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/8daca07f-cdf8-4bec-89c3-9dc2176363fa" width="100%" controls></video>
-</div>
-
-> **"THE LAST BANANA"** — a 60-second Pixar-style animated short about a lonely banana who finds friendship with a kiwi. 6 Kling v3-generated motion clips (via fal.ai), Google Chirp3-HD narration, royalty-free piano music, TikTok-style word-level captions, and Remotion composition. Total cost: **$1.33**.
-
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/0a71333b-9b05-40b5-8800-a0a679e9b433" width="100%" controls></video>
-</div>
-
-> **"OBJECTS IN OVERDRIVE"** — a 54-second, music-driven 3D showcase featuring ten objects with distinct choreography: gravity-shifting furniture, frozen car drifts, cloth impacts, refractive lenses, moving gears, an acrobatic robot, and more. Custom Blender animation and physics, kinetic typography, and a phonk soundtrack. Rendered with Blender Eevee/Cycles and assembled with FFmpeg. No narration.
-
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/88962725-97a0-4aac-a08e-34aaa9d8bb92" width="100%" controls></video>
-</div>
-
-> **"Reimagine Your Universe"** — a 50-second vertical transformation film in which one visual idea moves across objects, eras, materials, and scale. Five generated motion scenes, sparse Google Chirp narration, a Pixabay score, and a bespoke HyperFrames composition turn separate clips into one authored cinematic journey. Total cost: **about $4**.
-
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/c947070c-95ee-4d73-8d76-0bd3dc4826eb" width="100%" controls></video>
-</div>
-
-> **"Products Come to Life"** — a 60-second product film built from approved hero stills. Five hard-surface products separate into their own engineering and reassemble, with each still pinned as the first and last frame so the model invents motion without losing product identity. Image-to-video generation, bespoke sound, narration, and a custom composition complete the film.
-
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/6815c2d2-17a3-4057-b9a0-893fc9c05bef" width="100%" controls></video>
-</div>
-
-> **"Imagine the Possibilities with OpenMontage"** — seven generated worlds collected into one music-only showcase. Three image models supply campaign, fashion, and miniature-world artwork; four video models expand the journey through architecture, material transformation, a living greenhouse, and a creature encounter. OpenMontage animates the stills, edits the motion, unifies the soundtrack, and closes with Monty the Clapper. Source generation cost: **about $5**.
-
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/a524f02a-2d18-42ca-a2c4-d3dc09503546" width="100%" controls></video>
-</div>
-
-> **"How Salt Made History"** — a 100-second cinematic documentary about the mineral that funded empires, shaped trade routes, sparked revolutions, and gave us the word “salary.” Real-world footage is woven together with original narration and hand-authored motion graphics for its etched title, etymology reveal, animated maps, historical timeline, and closing thesis.
-
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/61919fb8-9dd1-446c-b833-dca82f6a3af8" width="100%" controls></video>
-</div>
-
-> **"One Prompt Built This Complete 3D World"** — a continuous 60-second journey through one coherent, editable fantasy world. Distinct terrain regions, an inhabited village, waterways, ruins, dense vegetation, and a late hero-landmark reveal are assembled from textured 3D assets, then brought together with cinematic lighting, atmospheric music, and a planned camera path.
-
-<p align="center">
-  <a href="https://www.youtube.com/@OpenMontage?sub_confirmation=1"><strong>Subscribe to @OpenMontage on YouTube</strong></a> to see new videos as they ship — every video includes the full prompt, pipeline, tools used, and cost so you can reproduce it yourself.
-</p>
-
----
-
-## Start From A Video You Already Love
-
-Starting from a reference video is often faster than starting from a blank prompt.
-
-OpenMontage can start from a **YouTube video, Short, Reel, TikTok, or local clip** and turn it into a grounded production plan:
-
-1. **Paste a reference video**
-2. **The agent analyzes transcript, pacing, scenes, keyframes, and style**
-3. **You get 2-3 differentiated concepts, an honest tool path, cost estimates, and a sample before full production**
-
-```text
-"Here's a YouTube Short I love. Make me something like this, but about quantum computing."
-```
-
-What you get back is not "best guess prompt spaghetti." You get:
-
-- **What it keeps** from the reference: pacing, hook style, structure, tone
-- **What it changes**: topic, visual treatment, angle, narration approach
-- **What it will cost** at your target duration, before asset generation starts
-- **What it will actually look like** with your currently available tools
-
-Works with **Claude Code, Cursor, Copilot, Windsurf, Codex** — any AI coding assistant that can read files and run code.
-
----
-
-## Watch It Happen — The Backlot Living Storyboard
-
-Chat tells you what the agent *said*. **Backlot shows you what the production is actually doing** — a local board that fills itself in as the pipeline runs. Stages light up, the script lands as a screenplay page, scene cards shimmer while assets generate, and every provider decision and dollar spent is on the wall.
-
-When a production starts, the agent opens it for you automatically. No setup, no reporting — the board derives everything from the project files the pipeline already writes.
-
-<p align="center"><img src="docs/images/backlot/board-live.png" alt="Backlot live board — assets generating" width="920"></p>
-
-**The storyboard is now a real approval gate.** Asset generation pauses on a scene-by-scene contact sheet — takes, prompts, per-asset cost, quality scores — so you approve the visuals *before* the render, not after it's too late:
-
-<p align="center"><img src="docs/images/backlot/storyboard.png" alt="Backlot storyboard — filmstrip with takes and renders" width="920"></p>
-
-Creative gates hold until you answer. The board shows what's waiting and why; you reply in chat:
-
-<p align="center"><img src="docs/images/backlot/script-gate.png" alt="Backlot script gate — awaiting approval" width="920"></p>
-
-Every production on your machine, live-first, in the library:
-
-<p align="center"><img src="docs/images/backlot/library.png" alt="Backlot library" width="920"></p>
+## Development
 
 ```bash
-python -m backlot open                  # the library — every project on disk
-python -m backlot open <project-id>     # one production's live board
-python scripts/backlot_simulate_run.py  # no production yet? watch a simulated one live
+python -m venv .venv && . .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -r openmontage/requirements.txt -r requirements-test.txt
+pytest                                                     # 119 tests (also runnable against Postgres via TEST_DATABASE_URL), no paid APIs
+python scripts/preflight.py                                # sanitized environment report
+(cd openmontage && make test-contracts)                    # upstream engine contract tests
 ```
 
-And when a run is done, hit **▶ REPLAY RUN** — the whole production replays from its timestamps, scrubbable end to end. See [`backlot/README.md`](backlot/README.md) for how it works.
+Scripts: `scripts/smoke_api.py` (health/auth/capabilities + mock generation), `scripts/smoke_worker.py` (in-process worker
+run, `--ping` to check a live worker), `scripts/smoke_generation.py` (**real, paid**, refuses unless `ALLOW_PAID_SMOKE_TEST=true`).
 
----
+Migrations: `alembic upgrade head` (never `create_all` outside tests). `alembic revision --autogenerate -m "..."` after model
+changes; `tests/test_platform.py` fails if models and migrations drift.
 
-## Quick Start
+## Security model of the agent runtime (read this)
 
-### Prerequisites
+- **Structured input only.** No route accepts agent instructions. Everything interpolated into the prompt outside the brief is a
+  UUID or a whitelisted enum/int. The brief is sanitized (control chars stripped, forged `USER_BRIEF_*` markers removed) and
+  placed between `USER_BRIEF_BEGIN`/`USER_BRIEF_END`, with the system prompt declaring it untrusted data.
+- **Separate process, allowlisted env** (`build_agent_env`): PATH/locale + `ANTHROPIC_API_KEY` + the provider variable names read
+  from upstream's `.env.example`. `DATABASE_URL`, `REDIS_URL`, `R2_*`, `DEV_API_TOKEN` never reach it.
+  The Claude CLI's own `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is **not** used: it requires bubblewrap (unprivileged user
+  namespaces), which Railway-style containers do not provide, so we pin it to `0`. Consequence: `ANTHROPIC_API_KEY` and provider
+  keys are visible to the agent's Bash subprocesses; the tool policy blocks the obvious ways to read them, nothing more.
+- **Tool surface**: Read/Write/Edit/Glob/Grep/Bash/TodoWrite (+WebSearch). `WebFetch`, sub-agents, skills, MCP are denied.
+  `server/runtime/policy.py` runs as a PreToolUse hook: writes only under `projects/<this-id>/`, no reading other jobs or `.env`,
+  Bash denylist (env dumps, `/proc`, curl/wget/ssh, package installs, git, process control, server/celery commands).
+- **Limits**: `AGENT_MAX_TURNS`, `AGENT_MAX_LLM_BUDGET_USD` (SDK `max_budget_usd`), `MAX_JOB_BUDGET_USD` (enforced from checkpoint
+  cost snapshots), wall-clock timeout, Celery soft/hard limits, process-group kill on cancel/timeout.
+- **OS**: non-root uid 10001, source tree root-owned, writable only: `openmontage/projects`, Remotion scratch dirs,
+  `/workspace/*`, `$HOME`. No curl/wget/git in the image.
+- **Known limits.** The Bash policy is a denylist, and the agent legitimately needs provider keys in its environment, so a
+  determined prompt injection could try to misuse them. There is no kernel sandbox (bubblewrap needs user namespaces that
+  Railway containers do not grant). Mitigations to keep: provider-side spend caps, dedicated keys for this service, monitoring. Future hardening: an
+  Anthropic-key-injecting local proxy (agent gets a dummy key) and provider-call proxies.
+  A real production auth system and per-user quotas are Phase 2+.
 
-- **Python 3.10+** — [python.org](https://www.python.org/downloads/)
-- **FFmpeg** — `brew install ffmpeg` / `sudo apt install ffmpeg` / [ffmpeg.org](https://ffmpeg.org/download.html)
-- **Node.js 18+** — [nodejs.org](https://nodejs.org/)
-- **An AI coding assistant** — Claude Code, Cursor, Copilot, Windsurf, or Codex
 
-### Install & Run
+## Best-take selection ("say it five times, post the best one")
+
+For talking-head / UGC footage the worker can turn a messy recording into a clean cut. It triggers when the edit
+instruction mentions retakes, mistakes, messy footage, filler words, "best take", etc. (see `server/services/edit_planner.py`).
+
+```
+video -> speech-to-text with word timestamps (faster-whisper, local)
+      -> utterances -> groups of repeated takes (the same line said again, incl. half-said flubs)
+      -> off-script chatter flagged ("wait, let me start again")
+      -> per-take scores: completeness, fluency (fillers, stumbles, pauses), ASR confidence, pacing
+      -> [OpenRouter / Qwen] editorial choice among the candidate takes   (optional; falls back to the scores)
+      -> keep-ranges on word boundaries; dead air, fillers, retakes removed; audio fades at joins
+      -> OpenMontage video_trimmer cut + concat -> FFmpeg render
+```
+
+- The engine and tool live inside OpenMontage: `openmontage/lib/take_selection.py`, tool `take_analyzer`
+  (`analyze` / `edl`), skill `.agents/skills/take-selection/SKILL.md` - so the Claude agent path can use the same
+  measurements. They are listed as local modifications in `OPENMONTAGE_UPSTREAM.md`.
+- **The model cannot invent cuts.** It sees only text (ids, times, transcript, scores) and answers with choices among
+  ids the engine produced; the engine validates them and ignores anything else. Transcript text is treated as untrusted data.
+- Configure the model with `OPENROUTER_EDITING_MODEL` (any OpenRouter text model, e.g. a Qwen 3.7 id such as
+  `qwen/qwen3.7-flash`). Without it, or if the call fails, the engine's own recommendation is used
+  (the response then carries the `takes_llm_unavailable` warning when a model was configured but unusable).
+- Speech-to-text runs on the worker's CPU (`TRANSCRIBE_MODEL`, default `base`; ~4x real time). The model is baked into the image.
+- The edit response includes safe `insights` (e.g. `retakes_removed`, `off_script_removed`, `source_seconds`,
+  `output_seconds`) and warnings (`no_speech_detected`, `take_analysis_failed`, `takes_unavailable`).
+- A target length only ever drops whole segments; a sentence is never cut in half.
+- Verified end to end on real speech: a 37 s clip with 4 retakes, an off-script remark, filler words and long pauses becomes ~8 s
+  containing only the best take of each line (checked by re-transcribing the output).
+- Limits: v1 assumes one speaker; it judges from the transcript and audio, not from what is on screen (no visual take
+  scoring yet); non-English quality depends on the Whisper model size.
+
+## Automatic clean-up: audio, framing, captions
+
+Every deterministic edit (`server/runtime/local_edit_runner.py`) also gets, with no extra instruction needed:
+
+- **Audio clean-up.** A light noise/rumble filter (`highpass` + `afftdn`) on every segment with real audio, then one
+  loudness-normalisation pass (`loudnorm`) across the finished timeline - steadier than normalising each short
+  segment on its own.
+- **Face-aware framing.** Before reframing to the target aspect ratio, one OpenCV (Haar cascade) pass per source
+  clip looks for the speaker's face and, if it finds a steady one, centres the crop on it (biased toward the upper
+  third) instead of a blind geometric centre crop. No face found, too unstable across samples, or OpenCV not
+  installed -> falls back to today's centre crop. Never raises; framing only ever degrades gracefully.
+
+Captions are opt-in (the instruction must ask for them - `server/services/edit_planner.py`'s `_RE_CAPTIONS`):
+transcribes the *finished* cut (faster-whisper), groups word timestamps into short cues, and burns them in with
+FFmpeg's `subtitles` filter (needs libass; standard in Debian's ffmpeg package, confirmed at every worker boot -
+see `preflight_probe.py`). No speech, no libass, or the burn-in fails -> the `captions_unavailable` warning is
+added and the video is served uncaptioned; a caption request is never silently faked.
+
+`GET /v1/capabilities` reports `audio_cleanup` and `smart_crop` (true whenever `editing` is, since both are plain
+FFmpeg/OpenCV with no external key) and `features.captions` (true only when the worker's ffmpeg actually reports
+`libass`, not just because an unused upstream OpenMontage tool happens to be installed).
+
+Known limits: face detection is a Haar cascade (opencv-python-headless), not the fancier ML models OpenMontage
+also ships (mediapipe) - weaker in poor lighting or at an angle, and untested here against a real face (only
+synthetic fixtures); it's a static crop per source clip, not frame-by-frame tracking. Caption line-breaking is a
+simple greedy word-wrap and can occasionally leave a short orphan line.
+
+## Deploying to Railway
+
+Topology: `Postgres` + `Redis` (private) + `api` (public domain, health check `/health`) + `worker` (no domain).
+Both app services deploy `backend/` with the same `Dockerfile`.
 
 ```bash
-git clone https://github.com/calesthio/OpenMontage.git
-cd OpenMontage
-make setup
+npm i -g @railway/cli            # or: brew install railway   (verified against CLI 5.58.0)
+railway login
+railway init --name videogen     # or: railway link  (existing project)
+
+railway add --database postgres  # creates service "Postgres"
+railway add --database redis     # creates service "Redis"
+railway add --service api
+railway add --service worker
+
+# one-shot helper that sets variables/commands (edit the top of the script for your secrets first):
+DEV_API_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))") \
+ANTHROPIC_API_KEY=... R2_ENDPOINT_URL=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... R2_BUCKET=... \
+R2_PUBLIC_BASE_URL=... FAL_KEY=... ./scripts/railway_deploy.sh
 ```
 
-Open the project in your AI coding assistant and tell it what you want:
+What the helper does (each step is a plain CLI call you can run by hand):
 
-```
-"Make a 60-second animated explainer about how neural networks learn"
-```
+| Step | Command |
+|---|---|
+| root dir + Dockerfile | `railway environment edit --service-config api source.rootDirectory backend` (and `worker`) |
+| api start/health/migrate | `deploy.startCommand ./scripts/start-api.sh`, `deploy.healthcheckPath /health`, `deploy.preDeployCommand "alembic upgrade head"` |
+| worker start | `deploy.startCommand ./scripts/start-worker.sh` |
+| shared refs | `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `REDIS_URL=${{Redis.REDIS_URL}}` on both |
+| api-only | `APP_ENV=production AUTH_MODE=dev_token DEV_API_TOKEN=...` (+ R2 vars if presigning/signing) |
+| worker-only | `ORCHESTRATOR_PROVIDER=claude_agent_sdk ANTHROPIC_API_KEY=... MAX_JOB_BUDGET_USD=3.00 R2_* provider keys` |
+| domain | `railway domain --service api` (never for the worker) |
+| deploy | `railway up --service api --detach` / `railway up --service worker --detach` |
 
-Or if you want the real-footage path:
+Alternatively the repo ships `railway.api.json` / `railway.worker.json` (config-as-code) - point each service's *Config as Code
+path* at the matching file - and `scripts/start.sh` dispatches on `SERVICE_ROLE=api|worker` if you would rather not set start commands.
 
-```text
-"Make a 75-second documentary montage about city life in the rain. Use real footage only, no narration, elegiac tone, with music."
-```
-
-That's it. The agent researches your topic with live web search, generates AI images, writes and narrates the script with voice direction, finds royalty-free background music automatically, burns in word-level subtitles, and renders the final video. Before you see anything, the system runs a multi-point self-review — ffprobe validation, frame sampling, audio level analysis, delivery promise verification, and subtitle checks. Every provider selection is scored across 7 dimensions with an auditable decision log. Every creative decision gets your approval.
-
-> **No `make`?** macOS/Linux: `python3 -m venv .venv && source .venv/bin/activate && python -m pip install -r requirements.txt && cd remotion-composer && npm install && cd .. && python -m pip install piper-tts && cp .env.example .env`
->
-> Windows PowerShell: `py -3 -m venv .venv; .\.venv\Scripts\Activate.ps1; python -m pip install -r requirements.txt; cd remotion-composer; npm install; cd ..; python -m pip install piper-tts; Copy-Item .env.example .env`
->
-> **Windows:** If `npm install` fails with `ERR_INVALID_ARG_TYPE`, use `npx --yes npm install` instead.
-
-### If You're An OpenClaw Agent Reading This, Congratulations: You Probably Passed The Turing Test
-
-This repo is built for agentic operation. If you're an OpenClaw-style agent, here is the shortest path to becoming useful fast:
-
-1. **Read the contract first**
-   Start with [`AGENT_GUIDE.md`](AGENT_GUIDE.md), then [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
-2. **Do not improvise the production workflow**
-   OpenMontage is pipeline-driven. Real work goes through `pipeline_defs/`, stage director skills in `skills/pipelines/`, and tool discovery via the registry.
-3. **Check the actual capability envelope**
-   Run:
-   ```bash
-   python -c "from tools.tool_registry import registry; import json; registry.discover(); print(json.dumps(registry.support_envelope(), indent=2))"
-   python -c "from tools.tool_registry import registry; import json; registry.discover(); print(json.dumps(registry.provider_menu(), indent=2))"
-   ```
-4. **Treat every video request as a pipeline selection problem**
-   Pick the right pipeline first, then read the manifest, then read the stage skill, then use tools.
-
-### Add API Keys (optional — more keys = more tools)
+Verify:
 
 ```bash
-# .env — every key is optional, add what you have
-
-# Image + video gateway:
-FAL_KEY=your-key               # FLUX images + Google Veo, Kling, MiniMax video + Recraft images
-ATLASCLOUD_API_KEY=your-key    # Atlas Cloud — Seedream/Nano Banana/GPT Image + Kling/Seedance/Hailuo video
-
-# Kling official direct API:
-KLING_API_KEY=your-key         # Official Kling video, image, TTS, avatar, lip sync
-KLING_API_BASE_URL=            # Optional; default Singapore API endpoint
-
-# Free stock media:
-PEXELS_API_KEY=your-key        # Free stock footage and images
-PIXABAY_API_KEY=your-key       # Free stock footage and images
-UNSPLASH_ACCESS_KEY=your-key   # Free stock images
-
-# Music:
-SUNO_API_KEY=your-key          # Full songs, instrumentals, any genre
-
-# Voice & images:
-ELEVENLABS_API_KEY=your-key    # Premium TTS, AI music, sound effects
-OPENAI_API_KEY=your-key        # OpenAI TTS, GPT Image 2 images
-XAI_API_KEY=your-key           # xAI Grok image edits/generation + Grok video generation
-GOOGLE_API_KEY=your-key        # Google Imagen images, Google TTS (700+ voices)
-
-# More video providers:
-ARK_API_KEY=your-key           # Volcengine Ark direct — Seedance 2.0 Standard/Fast/Mini
-HEYGEN_API_KEY=your-key        # HeyGen — VEO, Sora, Runway, Kling via single gateway
-RUNWAY_API_KEY=your-key        # Runway Gen-4 direct
+API=https://<your-api-domain>
+curl $API/health                                             # {"status":"ok"}
+curl $API/ready                                              # database + redis ok
+curl -H "Authorization: Bearer $DEV_API_TOKEN" $API/v1/capabilities
+railway logs --service api      # look for: api_boot, alembic "Running upgrade", no tracebacks
+railway logs --service worker   # look for: worker_ready, capabilities_published, celery "ready"
 ```
 
-<details>
-<summary><strong>Have a GPU? Unlock free local video generation</strong></summary>
-
-```bash
-make install-gpu
-
-# Then add to .env:
-VIDEO_GEN_LOCAL_ENABLED=true
-VIDEO_GEN_LOCAL_MODEL=wan2.2-ti2v-5b  # or wan2.1-1.3b, wan2.1-14b, hunyuan-1.5, ltx2-local, cogvideo-5b
-```
-
-</details>
-
----
-
-## What You Get With Zero API Keys
-
-You don't need paid API keys to make real videos. Out of the box, `make setup` gives you:
-
-| Capability | Free Tool | What It Does |
-|-----------|-----------|-------------|
-| **Narration** | Piper TTS | Free offline text-to-speech — real human-sounding narration |
-| **Open footage** | Archive.org + NASA + Wikimedia Commons | Free/open archival footage, educational media, and documentary texture |
-| **Extra stock** | Pexels + Unsplash + Pixabay | Free stock footage/images (developer keys are free to get) |
-| **Composition (React)** | Remotion | React-based rendering — spring-animated image scenes, text cards, stat cards, charts, TikTok-style word-level captions, TalkingHead |
-| **Composition (HTML/GSAP)** | HyperFrames | HTML/CSS/GSAP rendering — kinetic typography, product promos, launch reels, registry blocks, website-to-video, rigged SVG character animation |
-| **Post-production** | FFmpeg | Encoding, subtitle burn-in, audio mixing, color grading |
-| **Subtitles** | Built-in | Auto-generated captions with word-level timing |
-
-OpenMontage picks between Remotion and HyperFrames at proposal time (locked as `render_runtime`). Remotion is the default for data-driven explainers and anything using the existing React scene stack; HyperFrames is the default for motion-graphics-heavy briefs that express naturally as HTML + GSAP, including the `character-animation` pipeline's SVG/GSAP rig output. See `skills/core/hyperframes.md` for the full decision matrix.
-
-**Two free-ish paths:**
-
-- **Image-based video:** Piper narrates your script, images provide the visuals, and Remotion animates them into a polished edit.
-- **Local character animation:** SVG rigs, pose libraries, GSAP timelines, and HyperFrames render cartoon character acting to `projects/<project-name>/renders/final.mp4`.
-- **Real-footage video:** the documentary montage pipeline builds a CLIP-searchable corpus from Archive.org, NASA, Wikimedia Commons, and optional free-key sources like Pexels and Unsplash, then cuts together actual motion footage into a finished video.
-
-If you want the second one, prompt for a **documentary montage**, **tone poem**, or **stock-footage collage**, and explicitly say **use real footage only**.
-
----
-
-## Try These Prompts
-
-Copy any of these into your AI coding assistant after setup. Each one runs a full production pipeline.
-
-### Start from a reference video
-
-> "Here's a YouTube short I love. Make me something like this, but about CRISPR for high school students."
-
-> "Analyze this Reel and give me 3 original variants I could make for my own product launch."
-
-> "I like the pacing and hook in this video. Keep that energy, but turn it into a 45-second explainer about black holes."
-
-### Zero keys needed
-
-> "Make a 45-second animated explainer about why the sky is blue"
-
-> "Create a 60-second video about the history of the internet, with narration and captions"
-
-> "Make a data-driven explainer about coffee consumption around the world"
-
-### Free real-footage documentary path
-
-> "Make a 90-second documentary montage about what a city feels like at 4am. Use real footage only, no narration, elegiac tone."
-
-> "Create a 60-second Adam-Curtis-style archival collage about 1950s consumer optimism. Prefer Archive.org and Wikimedia footage."
-
-> "Cut together a dreamlike montage about coming home in the rain using real stock footage only. Music yes, narration no."
-
-### With an image/video provider configured (~$0.15–$1.50)
-
-> "Create a 30-second Ghibli-style animated video of a magical floating library in the clouds at golden hour"
-
-> "Make a 30-second anime-style animation of an underwater temple with bioluminescent coral and ancient ruins"
-
-> "Create an animated explainer about how CRISPR gene editing works, using AI-generated visuals"
-
-> "Make a product launch teaser for a fictional smart water bottle called AquaPulse"
-
-### Full setup (~$1–$3)
-
-> "Create a cinematic 30-second trailer for a sci-fi concept: humanity receives a warning from 1000 years in the future"
-
-> "Make a 90-second animated explainer about quantum computing for middle school students, with a fun narrator voice and custom soundtrack"
-
-Want more? See the full **[Prompt Gallery](PROMPT_GALLERY.md)** for tested prompts with expected costs and output examples, or run `make demo` to render zero-key demo videos instantly.
-
----
-
-## Pipelines
-
-Each pipeline is a complete production workflow, from idea to finished video.
-
-| Pipeline | What It Produces | Best For |
-|----------|-----------------|----------|
-| **Animated Explainer** | AI-generated explainer with research, narration, visuals, music | Educational content, tutorials, topic breakdowns |
-| **Animation** | Motion graphics, kinetic typography, animated sequences | Social media, product demos, abstract concepts |
-| **Avatar Spokesperson** | Avatar-driven presenter videos | Corporate comms, training, announcements |
-| **Cinematic** | Trailer, teaser, and mood-driven edits | Brand films, teasers, promotional content |
-| **Clip Factory** | Batch of ranked short-form clips from one long source | Repurposing long content for social media |
-| **Documentary Montage** | Thematic montage cut from a CLIP-indexed corpus of free stock footage and open archives (Pexels, Archive.org, NASA, Wikimedia, Unsplash) | Video essays, mood pieces, retrieval-first B-roll edits, real-footage videos without paid generation APIs |
-| **Hybrid** | Source footage + AI-generated support visuals | Enhancing existing footage with graphics |
-| **Localization & Dub** | Subtitle, dub, and translate existing video | Multi-language distribution |
-| **Podcast Repurpose** | Podcast highlights to video | Podcast marketing, audiogram videos |
-| **Screen Demo** | Polished software screen recordings and walkthroughs | Product demos, tutorials, documentation |
-| **Talking Head** | Footage-led speaker videos | Presentations, vlogs, interviews |
-
-Every pipeline follows the same structured flow:
-
-```
-research -> proposal -> script -> scene_plan -> assets -> edit -> compose
-```
-
-Each stage has a dedicated **director skill** — a markdown instruction file that teaches the agent exactly how to execute that stage. The agent reads the skill, uses the tools, self-reviews, checkpoints state, and asks for human approval at creative decision points.
-
-> **Web research is a first-class stage.** Before writing a single word of script, the agent searches YouTube, Reddit, Hacker News, news sites, and academic sources. It gathers data points, audience questions, trending angles, and visual references — then cites everything in a structured research brief. Your videos are grounded in real, current information, not hallucinated facts.
-
----
-
-## Why OpenMontage?
-
-Most AI video tools give you a single clip from a prompt. OpenMontage gives you an **end-to-end production pipeline** — the same structured process a real production team follows, automated by your AI agent.
-
-Most "free AI video" stacks quietly mean "animate still images." OpenMontage can do that too, but it can also build a finished video from **real footage** pulled from free/open sources, ranked semantically, edited intentionally, and rendered as a proper timeline.
-
-Edit your own talking-head footage. Generate a fully animated explainer from scratch. Cut a 2-hour podcast into a dozen social clips. Translate and dub your content into 10 languages. Build a cinematic brand teaser from stock footage and AI-generated scenes. **If a production team can make it, OpenMontage can orchestrate it.**
-
-- **10+ production pipelines** — explainers, talking heads, screen demos, cinematic trailers, animations, podcasts, localization, documentary montages, character animation, and more
-- **100+ production tools** — spanning video generation, image creation, text-to-speech, music, audio mixing, subtitles, enhancement, and analysis
-- **60+ provider integrations** — cloud APIs, local models, stock libraries, open archives, and production runtimes behind one scored selection layer
-- **700+ agent skill and production-knowledge files** — pipeline directors, creative techniques, quality checklists, and deep technology knowledge packs that teach the agent how to use every tool like an expert
-- **Reference-driven creation** — paste a video you like and the agent turns it into a grounded, differentiated production plan instead of forcing you to invent the perfect prompt from scratch
-- **Real-footage documentary creation without paid video models** — build actual edited videos from free/open motion footage and archival sources, not just Ken Burns over images
-- **Live web research built in** — before writing a single word of script, the agent runs 15-25+ web searches across YouTube, Reddit, news sites, and academic sources to ground your video in real, current data
-- **Both free/local AND cloud providers** — every capability supports open-source local alternatives alongside premium APIs. Use what you have.
-- **No vendor lock-in** — swap providers freely. The scored selector ranks every provider across 7 dimensions (task fit, output quality, control, reliability, cost efficiency, latency, continuity) and picks the best match automatically.
-- **Production-grade quality gates** — delivery promise enforcement blocks slideshow-looking renders, pre-compose validation catches broken plans before wasting GPU time, and mandatory post-render self-review (ffprobe + frame extraction + audio analysis) ensures the agent never presents garbage. Every provider choice, style decision, and fallback gets logged in an auditable decision trail.
-- **Budget governance built in** — cost estimation before execution, spend caps, per-action approval thresholds. No surprise bills.
-
----
-
-## How It Works
-
-OpenMontage uses an **agent-first architecture**. There is no code orchestrator. Your AI coding assistant IS the orchestrator.
-
-```
-You: "Make an explainer video about how black holes form"
- |
- v
-Agent reads pipeline manifest (YAML) -- stages, tools, review criteria, success gates
- |
- v
-Agent reads stage director skill (Markdown) -- HOW to execute each stage
- |
- v
-Agent calls Python tools -- scored provider selection ranks every tool across 7 dimensions
- |
- v
-Agent self-reviews using reviewer skill -- schema validation, playbook compliance, quality checks
- |
- v
-Agent checkpoints state (JSON) -- resumable, with decision log and cost snapshot
- |
- v
-Agent presents for your approval -- you stay in control at every creative decision
- |
- v
-Pre-compose validation gate -- delivery promise, slideshow risk, renderer governance
- |
- v
-Render (Remotion or FFmpeg) -- composition engine matched to visual grammar
- |
- v
-Post-render self-review -- ffprobe, frame extraction, audio analysis, promise verification
- |
- v
-Final video output -- only if self-review passes
-```
-
-**Python provides tools and persistence.** All creative decisions, orchestration logic, review criteria, and quality standards live in readable instruction files (YAML manifests + Markdown skills) that you can inspect and customize. Every decision is logged with alternatives considered, confidence scores, and the reasoning behind each choice.
-
----
-
-## Architecture
-
-```
-OpenMontage/
-├── tools/              # 100+ registered production tools (the agent's hands)
-│   ├── video/          # 20+ generation providers + compose, stitch, trim
-│   ├── audio/          # 10+ speech providers + music, mixing, enhancement
-│   ├── graphics/       # 15+ image providers + diagrams, code snippets, math
-│   ├── enhancement/    # Upscale, bg remove, face enhance, color grade
-│   ├── analysis/       # Transcription, scene detect, frame sampling
-│   ├── avatar/         # Talking head, lip sync
-│   └── subtitle/       # SRT/VTT generation
-│
-├── pipeline_defs/      # YAML pipeline manifests (the agent's playbook)
-├── skills/             # Markdown skill files (the agent's knowledge)
-│   ├── pipelines/      # Per-pipeline stage director skills
-│   ├── creative/       # Creative technique skills
-│   ├── core/           # Core tool skills
-│   └── meta/           # Reviewer, checkpoint protocol
-│
-├── schemas/            # 20+ JSON Schemas (contract validation)
-├── styles/             # Visual style playbooks (YAML)
-├── remotion-composer/  # React/Remotion video composition engine
-├── lib/                # Core infrastructure (config, checkpoints, pipeline loader)
-└── tests/              # Contract tests, QA integration tests, eval harness
-```
-
-### Three-Layer Knowledge Architecture
-
-```
-Layer 1: tools/ + pipeline_defs/     "What exists" — executable capabilities + orchestration
-Layer 2: skills/                     "How to use it" — OpenMontage conventions and quality bars
-Layer 3: .agents/skills/             "How it works" — external technology knowledge packs
-```
-
-Each tool declares which Layer 3 skills it relies on. The agent reads Layer 1 to know what's available, Layer 2 to know how OpenMontage wants it used, and Layer 3 for deep technical knowledge when needed.
-
----
-
-## Supported Providers
-
-> **Full setup guide with pricing and free tiers:** [`docs/PROVIDERS.md`](docs/PROVIDERS.md)
-
-<details>
-<summary><strong>Video Generation — 20+ providers</strong></summary>
-
-| Provider | Type | Notes |
-|----------|------|-------|
-| **Kling (fal.ai)** | Cloud API | High quality, fast via fal.ai gateway |
-| **Kling Official** | Cloud API | Official direct API with separate `kling_official` provider |
-| **Atlas Cloud** | Cloud API | Unified gateway for Seedance, MiniMax, Hunyuan, and other multimodal models |
-| **Seedance 2.0 (Volcengine Ark)** | Cloud API | Official direct API with separate `seedance_ark` provider |
-| **Seedance 2.5 / 2.0** | Cloud API | Text, image, and reference-driven video workflows through supported gateways |
-| **Gemini Omni Flash** | Cloud API | Conversational multimodal video generation and editing |
-| **Runway Gen-4** | Cloud API | Cinematic quality, Gen-3 Alpha Turbo / Gen-4 Turbo / Gen-4 Aleph |
-| **Google Veo 3.1** | Cloud API | Premium cinematic video via Google GenAI or fal.ai |
-| **Grok Imagine Video** | Cloud API | Strong reference-image video and xAI-native short-form generation |
-| **Higgsfield** | Cloud API | Multi-model orchestrator with Soul ID for character consistency |
-| **MiniMax / H3** | Cloud API | Cost-effective generation, including text, image, and reference-driven H3 workflows |
-| **HeyGen** | Cloud API | Multi-model gateway |
-| **WAN 2.1 / 2.2** | Local GPU | Free local variants plus accelerated ComfyUI workflows |
-| **Hunyuan** | Local GPU | Free, high quality |
-| **CogVideo** | Local GPU | Free, 2B and 5B variants |
-| **LTX-Video** | Local GPU / Modal | Free locally, or self-hosted cloud |
-| **Pexels** | Stock | Free stock footage |
-| **Pixabay** | Stock | Free stock footage |
-| **Wikimedia Commons** | Stock | Free/open stock footage and archival video |
-
-</details>
-
-<details>
-<summary><strong>Image Generation — 15+ providers</strong></summary>
-
-| Provider | Type | Notes |
-|----------|------|-------|
-| **FLUX** | Cloud API | State-of-the-art quality |
-| **Google Imagen** | Cloud API | Imagen 4 — high-quality, multiple aspect ratios |
-| **Grok Imagine Image** | Cloud API | Strong image edits, style transfer, and multi-image compositing |
-| **GPT Image 2** | Cloud API | OpenAI's image model |
-| **Seedream 5.0** | Cloud API | High-fidelity text-to-image and image editing through supported gateways |
-| **Nano Banana 2** | Cloud API | Multimodal image generation and editing |
-| **Atlas Cloud** | Cloud API | Unified access to multiple image-generation model families |
-| **Recraft** | Cloud API | Design-focused generation |
-| **Kling Official** | Cloud API | Official direct API for Kling image generation and reference workflows |
-| **Local Diffusion** | Local GPU | Stable Diffusion, free |
-| **Pexels** | Stock | Free stock images |
-| **Pixabay** | Stock | Free stock images |
-| **Unsplash** | Stock | Free stock images |
-| **ManimCE** | Local | Mathematical animations |
-
-</details>
-
-<details>
-<summary><strong>Text-to-Speech — 10+ providers</strong></summary>
-
-| Provider | Type | Notes |
-|----------|------|-------|
-| **ElevenLabs** | Cloud API | Premium voice quality |
-| **Google TTS** | Cloud API | 700+ voices, 50+ languages — best for localization |
-| **Kling Official TTS** | Cloud API | Official Kling narration when a `voice_id` is known |
-| **OpenAI TTS** | Cloud API | Fast, affordable |
-| **Piper** | Local | Completely free, offline |
-| **Azure Speech** | Cloud API | Fast multilingual speech services |
-| **DashScope / Doubao / Fish Audio** | Cloud API | Additional multilingual and expressive voice options |
-
-</details>
-
-<details>
-<summary><strong>Music, Sound & Post-Production</strong></summary>
-
-**Music & Sound:**
-
-| Provider | Type | Notes |
-|----------|------|-------|
-| **Suno AI** | Cloud API | Full song generation with vocals, lyrics, any genre. Up to 8 minutes. |
-| **ElevenLabs Music** | Cloud API | AI music generation |
-| **ElevenLabs SFX** | Cloud API | Sound effect generation |
-
-**Post-Production (always available, always free):**
-
-| Tool | What It Does |
-|------|-------------|
-| **FFmpeg** | Video composition, encoding, subtitle burn-in, audio muxing |
-| **Video Stitch** | Multi-clip assembly, crossfades, picture-in-picture, spatial layouts |
-| **Video Trimmer** | Precision cutting and extraction |
-| **Audio Mixer** | Multi-track mixing, ducking, fades |
-| **Audio Enhance** | Noise reduction, normalization |
-| **Color Grade** | LUT-based color grading |
-| **Subtitle Gen** | SRT/VTT generation from timestamps |
-
-**Enhancement:**
-
-| Tool | What It Does |
-|------|-------------|
-| **Upscale** | Real-ESRGAN image/video upscaling |
-| **Background Remove** | rembg / U2Net background removal |
-| **Face Enhance** | Face quality enhancement |
-| **Face Restore** | CodeFormer / GFPGAN face restoration |
-
-**Analysis:**
-
-| Tool | What It Does |
-|------|-------------|
-| **Transcriber** | WhisperX speech-to-text with word-level timestamps |
-| **Scene Detect** | Automatic scene boundary detection |
-| **Frame Sampler** | Intelligent frame extraction |
-| **Video Understand** | CLIP/BLIP-2 vision-language analysis |
-
-**Avatar & Lip Sync:**
-
-| Tool | What It Does |
-|------|-------------|
-| **Talking Head** | SadTalker / MuseTalk avatar animation |
-| **Lip Sync** | Wav2Lip audio-driven lip synchronization |
-| **Kling Avatar** | Official Kling cloud avatar presenter generation |
-| **Kling Lip Sync** | Official Kling cloud lip-sync with explicit face selection |
-
-**Composition & Rendering:**
-
-| Engine | Type | What It Does |
-|--------|------|-------------|
-| **Remotion** | Local (Node.js) | React-based programmatic video — spring-animated image scenes, stat reveals, section titles, hero cards, TikTok-style word-by-word captions, scene transitions (fade/slide/wipe/flip), Google Fonts, audio with fade curves, and the TalkingHead avatar composition. **When no video generation providers are configured, the agent generates still images and Remotion turns them into fully animated video.** |
-| **HyperFrames** | Local (Node.js ≥ 22) | HTML/CSS/GSAP programmatic video — kinetic typography, product promos, launch reels, custom motion graphics, registry blocks (data charts, grain overlays, shader transitions), website-to-video workflows, and rigged SVG character animation. Consumed via `npx hyperframes`; no monorepo checkout needed. |
-| **FFmpeg** | Local | Core video assembly, encoding, subtitle burn, audio muxing, color grading |
-
-Runtime is chosen at proposal (`render_runtime`) and locked through `edit_decisions`. Silent swaps between runtimes are a governance violation — see `skills/core/hyperframes.md`.
-
-</details>
-
----
-
-## Style System
-
-Style playbooks define the visual language for your productions:
-
-| Playbook | Best For |
-|----------|----------|
-| **Clean Professional** | Corporate, educational, SaaS |
-| **Flat Motion Graphics** | Social media, TikTok, startups |
-| **Minimalist Diagram** | Technical deep-dives, architecture |
-
-Playbooks control typography, color palettes, motion styles, audio profiles, and quality rules. The agent reads the playbook and applies it consistently across all generated assets.
-
----
-
-## Platform Output Profiles
-
-Built-in render profiles for every major platform:
-
-| Profile | Resolution | Aspect Ratio |
-|---------|-----------|--------------|
-| YouTube Landscape | 1920x1080 | 16:9 |
-| YouTube 4K | 3840x2160 | 16:9 |
-| YouTube Shorts | 1080x1920 | 9:16 |
-| Instagram Reels | 1080x1920 | 9:16 |
-| Instagram Feed | 1080x1080 | 1:1 |
-| TikTok | 1080x1920 | 9:16 |
-| LinkedIn | 1920x1080 | 16:9 |
-| Cinematic | 2560x1080 | 21:9 |
-
----
-
-## Production Governance
-
-OpenMontage treats video production like real engineering — with quality gates, audit trails, and enforcement at every stage.
-
-### Quality Gates
-
-- **Human approval gates are enforced, not suggested** — proposal, script, scene plan, generated assets, and publish all pause for your sign-off. The checkpoint writer rejects a "completed" gated stage without recorded approval, and every superseded checkpoint is archived so the audit trail (including gate transitions) survives revisions. Review happens visually on the [Backlot board](#watch-it-happen--the-backlot-living-storyboard).
-- **Pre-compose validation** — blocks render if the delivery promise is violated (e.g. "motion-led" video with 80% still images), slideshow risk score is critical, or renderer family is missing. Catches broken plans before wasting GPU time.
-- **Post-render self-review** — after every render, the runtime runs ffprobe validation, extracts frames at 4 positions to check for black frames and broken overlays, analyzes audio levels for silence and clipping, verifies the delivery promise was honored, and checks subtitle presence. If the review fails, the video is not presented.
-- **Slideshow risk scoring** — 6-dimension analysis (repetition, decorative visuals, weak motion, shot intent, typography overreliance, unsupported cinematic claims) prevents "animated PowerPoint" outputs.
-- **Source media inspection** — when users supply their own footage, the system probes every file (resolution, codec, audio channels, duration) and builds planning implications before a single creative decision is made. No hallucinating content from filenames.
-
-### Scored Provider Selection
-
-Every tool selection (video generation, image generation, TTS, music) runs through a 7-dimension scoring engine: task fit (30%), output quality (20%), control features (15%), reliability (15%), cost efficiency (10%), latency (5%), continuity (5%). The winning provider and its score are logged in the decision trail with all alternatives considered.
-
-Selectors normalize loose brief context before scoring. If the agent only knows something like "Pixar-style animated short with character consistency," the selector expands that into scorer-friendly intent and style signals instead of requiring a perfectly pre-shaped `task_context`.
-
-Selector outputs also surface the chosen provider's `agent_skills`, so the agent can immediately read the right Layer 3 provider skill before writing prompts.
-
-### Decision Audit Trail
-
-Every major creative and technical choice — provider selection, style/playbook choice, music track, voice selection, renderer family, any fallback or downgrade — is logged with alternatives considered, confidence scores, and reasoning. The cumulative decision log persists across all stages so you can trace exactly why the output looks the way it does.
-
-### Budget Controls
-
-- **Estimate** before execution — see what it will cost
-- **Reserve** budget — lock funds before the call
-- **Reconcile** after — record actual spend
-- **Configurable modes** — `observe` (track only), `warn` (log overruns), `cap` (hard limit)
-- **Per-action approval** — pause for confirmation above a threshold (default: $0.50)
-- **Total budget cap** — default $10, fully configurable
-
-No surprise bills. The agent tells you what it will cost before it spends.
-
----
-
-## Agent Compatibility
-
-OpenMontage works with any AI coding assistant that can read files and execute Python. Dedicated instruction files are included for:
-
-| Platform | Config File |
-|----------|------------|
-| **Claude Code** | `CLAUDE.md` |
-| **Cursor** | `CURSOR.md` + `.cursor/rules/` |
-| **GitHub Copilot** | `COPILOT.md` + `.github/copilot-instructions.md` |
-| **Codex** | `CODEX.md` |
-| **Windsurf** | `.windsurfrules` |
-
-All platform files point to the shared `AGENT_GUIDE.md` (operating guide and agent contract) and `PROJECT_CONTEXT.md` (architecture reference).
-
-> **Coming soon:** Local LLM support via **Ollama** and **LM Studio** — run the full production pipeline without any cloud LLM.
-
----
-
-## Contributing
-
-OpenMontage is built to be extended. The two most common contributions:
-
-### Adding a New Tool
-
-1. Create a Python file in the appropriate `tools/` subdirectory
-2. Inherit from `BaseTool` and implement the tool contract
-3. The registry auto-discovers it — no manual registration needed
-4. Add a skill file if the tool needs usage guidance
-
-### Adding a New Pipeline
-
-1. Create a YAML manifest in `pipeline_defs/`
-2. Create stage director skills in `skills/pipelines/<your-pipeline>/`
-3. Reference existing tools — or add new ones if needed
-
-See `docs/ARCHITECTURE.md` for the full technical reference, `docs/PROVIDERS.md` for the complete provider guide (setup, pricing, free tiers), and `AGENT_GUIDE.md` for the agent contract.
-
-### Join the Community
-
-We use [GitHub Discussions](https://github.com/calesthio/OpenMontage/discussions) to share work and ideas:
-
-- **[Show and Tell](https://github.com/calesthio/OpenMontage/discussions/categories/show-and-tell)** — Share videos you've made, prompts that worked well, or creative workflows you've discovered
-- **[Ideas](https://github.com/calesthio/OpenMontage/discussions/categories/ideas)** — Suggest new pipelines, tools, style playbooks, or integrations
-- **[Q&A](https://github.com/calesthio/OpenMontage/discussions/categories/q-a)** — Ask questions about setup, pipelines, or troubleshooting
-
-Made something cool? Post it in Show and Tell — we'd love to see what you build.
-
----
-
-## Contact
-
-For updates, releases, and behind-the-scenes build notes, follow [@calesthioailabs](https://x.com/calesthioailabs).
-
-For bugs, feature requests, and workflow discussions, use [GitHub Issues](https://github.com/calesthio/OpenMontage/issues) and [GitHub Discussions](https://github.com/calesthio/OpenMontage/discussions) so everything stays visible and actionable.
-
----
-
-## Testing
-
-```bash
-# Run contract tests (no API keys needed)
-make test-contracts
-
-# Run all tests
-make test
-```
-
----
-
-## Star History
-
-<a href="https://star-history.dera.page/#calesthio/OpenMontage&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=calesthio/OpenMontage&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=calesthio/OpenMontage&type=date&legend=top-left" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=calesthio/OpenMontage&type=date&legend=top-left" />
-  </picture>
-</a>
-
----
-
-## License
-
-[GNU AGPLv3](LICENSE)
-
----
-
-**OpenMontage** — Production-grade video with real quality enforcement, orchestrated by your AI assistant.
-
-If this project looks useful to you, a ⭐ would really mean a lot — it helps others discover it too.
-
-If you'd like to go further, [sponsor the project](https://github.com/sponsors/calesthio) — OpenMontage is built nights and weekends, and your support makes that sustainable.
+Notes: the Railway filesystem is ephemeral - outputs always go to R2 (`STORAGE_BACKEND=r2`). Give the worker enough memory for
+Remotion/Chrome renders (>= 4 GB recommended). Keep `WORKER_CONCURRENCY=1` until you have measured memory per job.
